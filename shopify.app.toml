@@ -1,0 +1,58 @@
+client_id = "43bed8d0d81976896bd859c1bc5d3ddc"
+name = "ai-product-search"
+
+application_url = "https://example.com"
+embedded = true
+
+[access_scopes]
+scopes = "read_products,read_inventory,write_app_proxy"
+
+[app_proxy]
+url = "/api/ai-search"
+prefix = "apps"
+subpath = "ai-search"
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/uninstalled"
+topics = ["app/uninstalled"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/scopes_update"
+topics = ["app/scopes_update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/create"
+topics = ["products/create"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/update"
+topics = ["products/update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/delete"
+topics = ["products/delete"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/inventory_levels/update"
+topics = ["inventory_levels/update"]
+
+# Mandatory GDPR compliance webhooks — required by Shopify for every
+# App Store app, regardless of whether the app stores customer PII.
+# These three topics are NOT valid entries for [[webhooks.subscriptions]]
+# (confirmed live: `shopify app deploy` rejects them there with
+# "the following topic is invalid") — Shopify requires them declared
+# in this dedicated table instead. Same route handlers, same URIs,
+# just a different declaration mechanism.
+[webhooks.privacy_compliance]
+customer_data_request_url = "/webhooks/customers/data_request"
+customer_deletion_url = "/webhooks/customers/redact"
+shop_deletion_url = "/webhooks/shop/redact"
+
+[auth]
+redirect_urls = ["https://example.com/api/auth"]
+
+[build]
+automatically_update_urls_on_dev = true

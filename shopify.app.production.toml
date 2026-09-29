@@ -1,0 +1,59 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id ="1321686728aa89ed3aaebfa8c98915ba"
+
+application_url = "https://example.com"
+embedded = true
+name = "Product Search"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_products,read_inventory,write_app_proxy"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[app_proxy]
+url = "/api/ai-search"
+prefix = "apps"
+subpath = "ai-search"
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/uninstalled"
+topics = ["app/uninstalled"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/scopes_update"
+topics = ["app/scopes_update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/create"
+topics = ["products/create"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/update"
+topics = ["products/update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/delete"
+topics = ["products/delete"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/inventory_levels/update"
+topics = ["inventory_levels/update"]
+
+# Mandatory GDPR compliance webhooks — same reasoning as the OLD
+# app's shopify.app.toml: these three topics are not valid entries
+# for [[webhooks.subscriptions]], they require this dedicated table.
+[webhooks.privacy_compliance]
+customer_data_request_url = "/webhooks/customers/data_request"
+customer_deletion_url = "/webhooks/customers/redact"
+shop_deletion_url = "/webhooks/shop/redact"
+
+[auth]
+redirect_urls = ["https://example.com/api/auth"]
+
+[build]
+automatically_update_urls_on_dev = true
