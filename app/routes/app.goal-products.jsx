@@ -475,6 +475,26 @@ export default function GoalProducts() {
     null;
 
 
+  /*
+   * Search always uses the SAVED rule, so the rule test panel
+   * warns when the form differs from it.
+   */
+  const savedKeys =
+    (savedGoal?.skus || []).slice().sort().join("|");
+
+  const draftKeys =
+    selectedProducts
+      .map(product => product.matchKey)
+      .sort()
+      .join("|");
+
+  const hasUnsavedRuleChanges =
+    savedGoal
+      ? (ruleType || "") !== (savedGoal.ruleType || "") ||
+        draftKeys !== savedKeys
+      : Boolean(ruleType) || selectedProducts.length > 0;
+
+
   const isSaving =
     goalFetcher.state !== "idle" &&
     goalFetcher.formMethod === "PUT";
@@ -884,51 +904,12 @@ export default function GoalProducts() {
 
       {/* =================================================
         // 3. CURRENT TOP SEARCH PRODUCTS
-        //
-        // The backend has no endpoint or stored data for
-        // "what is currently ranking at the top of search
-        // results" — search.service.js only ever ranks
-        // products live, per customer query; nothing about
-        // past or current rankings is logged or aggregated
-        // anywhere (confirmed by inspecting
-        // backend/src/services/search/search.service.js and
-        // its controllers/routes).
-        //
-        // So this section is a real, honest empty state —
-        // not a placeholder standing in for a fetch that was
-        // simply left unwired. Do not replace this with fake
-        // or invented products.
         // ================================================= */}
 
-      <s-section heading="Current Top Search Products">
-
-        <s-stack
-          direction="block"
-          gap="base"
-        >
-
-          <s-paragraph>
-            This section will show which products are
-            currently appearing at the top of website search
-            results, based on live search ranking.
-          </s-paragraph>
-
-          <s-banner tone="info">
-
-            Current search ranking data is not available yet.
-            Search results are generated live for each customer
-            query — the backend does not currently store or
-            expose a ranking of &quot;top&quot; products
-            independent of a search term, so there is nothing
-            real to show here.
-            This section will display live data once that
-            capability exists.
-
-          </s-banner>
-
-        </s-stack>
-
-      </s-section>
+      <RuleTestPanel
+        savedGoal={savedGoal}
+        hasUnsavedChanges={hasUnsavedRuleChanges}
+      />
 
       {/* =================================================
         // 4. ALL PRODUCTS
@@ -1204,3 +1185,227 @@ export default function GoalProducts() {
     </s-page>
   );
 }
+
+
+// =========================================================
+// CURRENT TOP SEARCH PRODUCTS (RULE TEST)
+// =========================================================
+//
+// Search ranking only exists per query, so the seller types a
+// search and sees the real top results customers get right
+// now — the same backend search the storefront uses, through
+// the admin-only /api/search-preview route — with the SAVED
+// rule applied by the backend. Products the saved rule targets
+// are labelled so the rule's effect is visible.
+// =========================================================
+
+const RULE_BADGES = {
+  boost: { label: "Boosted", tone: "success" },
+  demote: { label: "Demoted", tone: "warning" }
+};
+
+// Plain JS page without prop-types (same as the rest of the app).
+/* eslint-disable react/prop-types */
+function RuleTestPanel({
+  savedGoal,
+  hasUnsavedChanges
+}) {
+
+  const fetcher = useFetcher();
+
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState("final");
+
+  const isLoading = fetcher.state !== "idle";
+  const result = fetcher.data;
+  const products = Array.isArray(result?.products) ? result.products : [];
+
+  const activeRule =
+    savedGoal?.enabled !== false &&
+    savedGoal?.ruleType &&
+    Array.isArray(savedGoal?.skus) &&
+    savedGoal.skus.length
+      ? savedGoal
+      : null;
+
+  const targetKeys = new Set(activeRule?.skus || []);
+
+  const runSearch = () => {
+    const clean = query.trim();
+
+    if (!clean) {
+      return;
+    }
+
+    fetcher.load(
+      `/api/search-preview?${new URLSearchParams({ q: clean, mode }).toString()}`
+    );
+  };
+
+  /*
+   * Boost only lifts products that are relevant to the search,
+   * so explain an "absent" boosted product only when it matters.
+   */
+  const boostedMissing =
+    result?.success === true &&
+    activeRule?.ruleType === "boost" &&
+    !products.some(product => targetKeys.has(product.matchKey));
+
+  return (
+    <s-section heading="Current Top Search Products">
+
+      <s-stack direction="block" gap="base">
+
+        <s-paragraph>
+          Type a search the way a customer would to see the top
+          products your store returns for it right now, with your
+          saved rule applied.
+        </s-paragraph>
+
+        {
+          hasUnsavedChanges && (
+            <s-banner tone="warning">
+              You have unsaved rule changes. Results use the last
+              saved rule until you click Save Rule.
+            </s-banner>
+          )
+        }
+
+        <s-search-field
+          label="Search"
+          placeholder="e.g. jacket"
+          value={query}
+          onChange={(event) => setQuery(event?.currentTarget?.value ?? "")}
+        />
+
+        <s-choice-list
+          label="Search type"
+          name="ruleTestMode"
+          multiple={false}
+          values={[mode]}
+          onChange={(event) =>
+            setMode(event?.currentTarget?.values?.[0] || "final")
+          }
+        >
+          <s-choice value="final" details="The AI-ranked results page customers get after pressing Enter.">
+            Search results page
+          </s-choice>
+          <s-choice value="preview" details="The instant suggestions shown while typing.">
+            Instant suggestions
+          </s-choice>
+        </s-choice-list>
+
+        <s-button
+          variant="primary"
+          onClick={runSearch}
+          {...(isLoading ? { loading: true } : {})}
+          {...(!query.trim() ? { disabled: true } : {})}
+        >
+          {isLoading ? "Searching…" : "Show Top Products"}
+        </s-button>
+
+        {
+          result?.success === false && (
+            <s-banner tone="critical">
+              {result.message || "Search failed"}
+            </s-banner>
+          )
+        }
+
+        {
+          result?.success === true && result.message && (
+            <s-text color="subdued">{result.message}</s-text>
+          )
+        }
+
+        {
+          result?.success === true && (
+            products.length ? (
+
+              <s-stack direction="block" gap="small-200">
+                {
+                  products.map((product, index) => {
+
+                    const badge =
+                      targetKeys.has(product.matchKey)
+                        ? RULE_BADGES[activeRule.ruleType]
+                        : null;
+
+                    return (
+                      <s-box
+                        key={product.matchKey || index}
+                        padding="small"
+                        borderWidth="base"
+                        borderRadius="base"
+                      >
+                        <s-stack
+                          direction="inline"
+                          gap="base"
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <s-stack direction="inline" gap="base" alignItems="center">
+
+                            <s-text type="strong">#{index + 1}</s-text>
+
+                            {
+                              product.image && (
+                                <s-thumbnail
+                                  src={product.image}
+                                  alt={product.title || ""}
+                                  size="small"
+                                />
+                              )
+                            }
+
+                            <s-stack direction="block" gap="small-200">
+                              <s-text type="strong">
+                                {product.title || "Untitled product"}
+                              </s-text>
+                              <s-text color="subdued">
+                                {product.sku ? `SKU: ${product.sku}` : "No SKU"}
+                              </s-text>
+                            </s-stack>
+
+                          </s-stack>
+
+                          {
+                            badge && (
+                              <s-badge tone={badge.tone}>
+                                {badge.label}
+                              </s-badge>
+                            )
+                          }
+                        </s-stack>
+                      </s-box>
+                    );
+                  })
+                }
+              </s-stack>
+
+            ) : (
+
+              <s-text color="subdued">
+                No products found for this search.
+              </s-text>
+
+            )
+          )
+        }
+
+        {
+          boostedMissing && products.length > 0 && (
+            <s-text color="subdued">
+              None of your boosted products appear here. Boost only
+              moves a product to the top for searches it is relevant
+              to — try a search that matches one of them.
+            </s-text>
+          )
+        }
+
+      </s-stack>
+
+    </s-section>
+  );
+}
+/* eslint-enable react/prop-types */

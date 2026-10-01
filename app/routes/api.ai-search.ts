@@ -1,4 +1,5 @@
 import { authenticate } from "../shopify.server";
+import { backendInternalFetch } from "../utils/backend.server";
 
 export const loader = async ({
   request,
@@ -74,69 +75,31 @@ export const loader = async ({
       }
     );
 
-    const backendUrl =
-      new URL(
-        `${process.env.BACKEND_URL}/api/ai-search/search`
-      );
-
-    backendUrl.searchParams.set(
-      "q",
-      query
-    );
-
-    backendUrl.searchParams.set(
-      "shop",
-      shop
-    );
-
-    backendUrl.searchParams.set(
-      "mode",
-      mode
-    );
-
-    const response =
-      await fetch(
-        backendUrl.toString(),
+    /*
+     * backendInternalFetch adds the internal API secret
+     * server-side; the backend rejects search requests
+     * without it.
+     */
+    const result =
+      await backendInternalFetch(
+        "/api/ai-search/search",
         {
           method: "GET",
-          headers: {
-            Accept:
-              "application/json",
+          searchParams: {
+            q: query,
+            shop,
+            mode,
           },
           signal:
             request.signal,
         }
       );
-      
-      console.log("[APP PROXY AI SEARCH]", {
-  query,
-  shop,
-  mode,
-  backendUrl
-});
-
-
-    const text =
-      await response.text();
-
-    let data;
-
-    try {
-      data =
-        JSON.parse(text);
-    } catch {
-      data = {
-        success: false,
-        message:
-          "Invalid backend response",
-      };
-    }
 
     return Response.json(
-      data,
+      result.data,
       {
         status:
-          response.status,
+          result.status,
       }
     );
   } catch (error) {
