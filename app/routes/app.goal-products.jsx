@@ -39,6 +39,13 @@ import { backendInternalFetch } from "../utils/backend.server";
 
 const PAGE_SIZE = 25;
 
+/*
+ * "Current Top Search Products" (rule test panel, including its
+ * search-type descriptions) is hidden for now. Set to true to
+ * show it again; nothing else depends on it.
+ */
+const SHOW_RULE_TEST_PANEL = false;
+
 const SEARCH_DEBOUNCE_MS = 400;
 
 
@@ -906,10 +913,14 @@ export default function GoalProducts() {
         // 3. CURRENT TOP SEARCH PRODUCTS
         // ================================================= */}
 
-      <RuleTestPanel
-        savedGoal={savedGoal}
-        hasUnsavedChanges={hasUnsavedRuleChanges}
-      />
+      {
+        SHOW_RULE_TEST_PANEL && (
+          <RuleTestPanel
+            savedGoal={savedGoal}
+            hasUnsavedChanges={hasUnsavedRuleChanges}
+          />
+        )
+      }
 
       {/* =================================================
         // 4. ALL PRODUCTS

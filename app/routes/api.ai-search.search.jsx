@@ -44,11 +44,22 @@ export const loader = async ({ request }) => {
       );
     }
 
+    /*
+     * Customers get the AI model (GLM) first ("final"); the
+     * backend falls back to JEV only if GLM fails. "preview"
+     * (JEV only) is used only when explicitly requested.
+     */
+    const mode =
+      url.searchParams.get("mode") === "preview"
+        ? "preview"
+        : "final";
+
     console.log(
       "[SHOPIFY APP PROXY]",
       {
         shop,
         query,
+        mode,
       }
     );
 
@@ -57,7 +68,10 @@ export const loader = async ({ request }) => {
         "/api/ai-search/search",
         {
           method: "GET",
-          searchParams: { shop, q: query },
+          searchParams: { shop, q: query, mode },
+          // Customer typed past this search: cancel it in the
+          // backend too, so its AI call is dropped.
+          signal: request.signal,
         }
       );
 

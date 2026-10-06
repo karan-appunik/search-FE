@@ -45,12 +45,28 @@
   // request on every keystroke while still feeling live.
   minLength: 2,
   debounce: 200,
+  // The AI request waits for a slightly longer typing pause than
+  // the instant (JEV) one, so half-typed words don't each start
+  // an AI call.
+  aiPause: 400,
   maxResults: 6,
   cacheTtl: 60000,
   cacheSize: 30,
   pendingSearchKey:
     "ai-product-search-pending"
 };
+
+  /*
+   * Customers get the AI model's results; the backend falls back
+   * to JEV only when the AI fails.
+   *
+   * While the AI works (seconds), the instant JEV results
+   * ("preview") are shown first and then replaced by the AI's
+   * results when they arrive. If the AI fails, the JEV results
+   * simply stay.
+   */
+  const SEARCH_MODE = "final";
+  const INSTANT_MODE = "preview";
 
   const states = new WeakMap();
   // Shared across the whole storefront runtime. This is important because
@@ -104,7 +120,8 @@
         // re-renders its predictive-search UI while the tab is restored.
         lastRenderedQuery: "",
         resultType: "direct",
-        resultMessage: ""
+        resultMessage: "",
+        statusText: ""
       };
 
       states.set(input, state);
@@ -128,6 +145,12 @@
       state.controller.abort();
       state.controller = null;
     }
+
+    if (state.instantLane?.controller) {
+      state.instantLane.controller.abort();
+    }
+
+    state.instantLane = null;
 
     state.request =
       nextSequence();
@@ -1154,6 +1177,82 @@ console.log(
   //
   // =========================================================
 
+  /*
+   * How this theme renders a predictive-search product row,
+   * learned from the theme's own markup the first time results
+   * are shown (see learnThemeStatusStyle). Status messages copy
+   * it so they look native in any theme, not just Dawn. Kept in
+   * sessionStorage so messages shown before the first result on
+   * a later page (e.g. "Looking for best result...") match too.
+   */
+  const THEME_STYLE_KEY = "ai-product-search:status-style";
+  let themeStatusStyle = null;
+
+  try {
+    themeStatusStyle = JSON.parse(
+      window.sessionStorage.getItem(THEME_STYLE_KEY) || "null"
+    );
+  } catch (error) {
+    themeStatusStyle = null;
+  }
+
+  /*
+   * Reads the first product row of native markup: the classes
+   * on the element holding the product title (typography) and
+   * where the row's content starts (spacing). Only reads the
+   * DOM; never changes the theme's markup.
+   */
+  function learnThemeStatusStyle(container) {
+    try {
+      const link = container.querySelector("a[href*='/products/']");
+
+      if (!link) {
+        return;
+      }
+
+      // Deepest element in the row that holds visible text: the
+      // product title in every theme's predictive markup.
+      const titleElement = Array.from(link.querySelectorAll("*"))
+        .filter(element =>
+          element.children.length === 0 &&
+          String(element.textContent || "").trim()
+        )[0];
+
+      const containerRect = container.getBoundingClientRect();
+      const linkRect = link.getBoundingClientRect();
+      const linkStyle = window.getComputedStyle(link);
+
+      if (!linkRect.width || !containerRect.width) {
+        return;
+      }
+
+      themeStatusStyle = {
+        textTag: titleElement ? titleElement.tagName.toLowerCase() : "span",
+        textClass: titleElement ? titleElement.className : "",
+        paddingTop: linkStyle.paddingTop,
+        paddingBottom: linkStyle.paddingBottom,
+        paddingLeft:
+          Math.max(0, Math.round(linkRect.left - containerRect.left + parseFloat(linkStyle.paddingLeft || "0"))) + "px",
+        paddingRight:
+          Math.max(0, Math.round(containerRect.right - linkRect.right + parseFloat(linkStyle.paddingRight || "0"))) + "px"
+      };
+
+      try {
+        window.sessionStorage.setItem(THEME_STYLE_KEY, JSON.stringify(themeStatusStyle));
+      } catch (error) {
+        // Storage unavailable (private mode): this page still uses it.
+      }
+    } catch (error) {
+      // Styling is best-effort; never break search over it.
+    }
+  }
+
+  /*
+   * A status line (loading / alternative / no results) styled
+   * like the theme's own product rows. Marked with
+   * data-ai-search-status so the persistence observer can tell
+   * when a theme re-render dropped it.
+   */
   function createStatusElement(
     input,
     text
@@ -1170,58 +1269,96 @@ console.log(
     }
 
 
-    const tagName =
-      container.matches(
-        "ul, ol"
-      )
-        ? "li"
-        : "div";
-
-
     const status =
       document.createElement(
-        tagName
+        container.matches("ul, ol") ? "li" : "div"
       );
 
-
-    status.className =
-      "predictive-search__list-item predictive-search__item";
-
-
-    status.setAttribute(
-      "role",
-      "status"
-    );
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.setAttribute("data-ai-search-status", "true");
+    status.style.listStyle = "none";
 
 
-    status.setAttribute(
-      "aria-live",
-      "polite"
-    );
+    const learned = themeStatusStyle;
 
-
-    const textNode =
+    const textElement =
       document.createElement(
-        "span"
+        learned && /^(p|span|div|h[1-6])$/.test(learned.textTag)
+          ? learned.textTag
+          : "span"
       );
 
+    if (learned) {
+      textElement.className = learned.textClass || "";
+      status.style.paddingTop = learned.paddingTop;
+      status.style.paddingBottom = learned.paddingBottom;
+      status.style.paddingLeft = learned.paddingLeft;
+      status.style.paddingRight = learned.paddingRight;
+    } else {
+      // Nothing learned yet on this store: Dawn-family classes
+      // (most Shopify themes derive from Dawn), plus padding only
+      // if the theme gives this element none.
+      status.className =
+        "predictive-search__list-item predictive-search__item";
+      textElement.className =
+        "predictive-search__item-heading h5";
+    }
 
-    textNode.className =
-      "predictive-search__item-heading h5";
+    textElement.style.margin = "0";
+    textElement.textContent = text;
+    status.appendChild(textElement);
 
-
-    textNode.textContent =
-      text;
-
-
-    status.appendChild(
-      textNode
-    );
+    if (!learned) {
+      queueMicrotask(() => {
+        try {
+          if (
+            status.isConnected &&
+            parseFloat(window.getComputedStyle(status).paddingLeft || "0") === 0
+          ) {
+            status.style.padding = "1rem 2rem";
+          }
+        } catch (error) {
+          // best-effort only
+        }
+      });
+    }
 
 
     return status;
   }
 
+  /*
+   * Text for a search with nothing to show (rare: the backend
+   * returns similar in-stock products whenever it has any).
+   * Same message as alternative results; the native
+   * "No results found" wording is never shown.
+   */
+  const ALTERNATIVE_MESSAGE =
+    "We didn't find exactly that, but you might like these";
+
+  function noResultsText() {
+    return ALTERNATIVE_MESSAGE;
+  }
+
+  const LOADING_TEXT = "Looking for best result...";
+
+  function renderStatus(input, state, text) {
+    const container = getResultContainer(input);
+
+    if (!container) {
+      return;
+    }
+
+    state.internalMutation = true;
+
+    try {
+      const statusElement = createStatusElement(input, text);
+      container.replaceChildren(statusElement || document.createTextNode(text));
+    } finally {
+      queueMicrotask(() => { state.internalMutation = false; });
+    }
+  }
 
 function showStatus(
     input,
@@ -1232,42 +1369,21 @@ function showStatus(
     state.mode = mode;
     state.searchingQuery = String(input?.value || "").trim();
 
+    // Remembered so the persistence observer can put the same
+    // message back if the theme re-renders the dropdown.
+    state.statusText = text;
+
     if (mode === "loading") {
       input?.setAttribute("aria-busy", "true");
       openNativeShell(input);
-      const container = getResultContainer(input);
-      if (container) {
-        state.internalMutation = true;
-        try {
-          // Was a bare text node with no wrapper/classes, which is
-          // why it sat flush against the edge instead of aligning
-          // with the rest of the predictive-search UI. Reusing
-          // createStatusElement() (already used for the
-          // alternative/no-results banners) applies the same
-          // theme-native classes those already get, fixing the
-          // alignment without introducing any new markup, CSS, or
-          // behavior.
-          const statusElement = createStatusElement(input, "Looking for best result...");
-          container.replaceChildren(statusElement || document.createTextNode("Looking for best result..."));
-        } finally {
-          queueMicrotask(() => { state.internalMutation = false; });
-        }
-      }
+      renderStatus(input, state, text);
       return;
     }
 
     input?.removeAttribute("aria-busy");
 
     if (mode === "no-results") {
-      const container = getResultContainer(input);
-      if (container) {
-        state.internalMutation = true;
-        try {
-          container.replaceChildren(document.createTextNode(text));
-        } finally {
-          queueMicrotask(() => { state.internalMutation = false; });
-        }
-      }
+      renderStatus(input, state, text);
     }
   }
 
@@ -1474,28 +1590,16 @@ function showStatus(
           return;
         }
 
-        if (state.mode === "loading") {
-          const loadingText = "Looking for best result...";
-          if (String(container.textContent || "").trim() !== loadingText) {
-            state.internalMutation = true;
-            try {
-              container.replaceChildren(document.createTextNode(loadingText));
-            } finally {
-              queueMicrotask(() => { state.internalMutation = false; });
-            }
-          }
-          return;
-        }
+        if (state.mode === "loading" || state.mode === "no-results") {
+          const statusText =
+            state.statusText ||
+            (state.mode === "loading" ? LOADING_TEXT : noResultsText(state.searchingQuery));
 
-        if (state.mode === "no-results") {
-          const noResultsText = "No products found. Check other available products.";
-          if (String(container.textContent || "").trim() !== noResultsText) {
-            state.internalMutation = true;
-            try {
-              container.replaceChildren(document.createTextNode(noResultsText));
-            } finally {
-              queueMicrotask(() => { state.internalMutation = false; });
-            }
+          if (
+            String(container.textContent || "").trim() !== statusText ||
+            !container.querySelector("[data-ai-search-status]")
+          ) {
+            renderStatus(input, state, statusText);
           }
           return;
         }
@@ -1532,7 +1636,13 @@ function showStatus(
               );
           }
 
-          if (searchForRowPresent || handlesDiverged) {
+          // The theme re-rendered the same products but dropped
+          // our "We didn't find exactly that..." message.
+          const messageMissing =
+            Boolean(state.resultMessage) &&
+            !container.querySelector("[data-ai-search-status]");
+
+          if (searchForRowPresent || handlesDiverged || messageMissing) {
             restoreLastAIResults(input, { force: true });
           }
         }
@@ -1748,11 +1858,12 @@ function showStatus(
     state,
     requestId,
     resultType = "direct",
-    resultMessage = ""
+    resultMessage = "",
+    shouldRender = null
   ) {
     if (!Array.isArray(products) || !products.length) {
       input.removeAttribute("aria-busy");
-      return;
+      return false;
     }
 
     const currentQuery = String(input.value || "").trim();
@@ -1781,9 +1892,10 @@ function showStatus(
 
     if (
       requestId !== state.request ||
-      String(input.value || "").trim() !== query
+      String(input.value || "").trim() !== query ||
+      (shouldRender && !shouldRender())
     ) {
-      return;
+      return false;
     }
 
     // Remove Shopify's "Search for ..." action because it exposes the
@@ -1814,6 +1926,8 @@ function showStatus(
       // Shopify generated this markup. No product-card markup or CSS is
       // created by the app.
       container.innerHTML = markup;
+
+      learnThemeStatusStyle(container);
 
       // Native predictive search re-ranks by its own relevance,
       // not by GLM/rule ranking. Reorder the already-rendered
@@ -1902,6 +2016,8 @@ function showStatus(
       "for:",
       query
     );
+
+    return true;
   }
 
 
@@ -1928,8 +2044,8 @@ function showStatus(
     // events. requestAI also has a shared in-flight guard, but this prevents
     // a second lifecycle from even reaching the request layer.
     if (state.lastStartedQuery === cleanQuery) {
-      const cached = getCached(`preview:${cleanQuery.toLowerCase()}`);
-      const active = inFlight.get(`preview:${cleanQuery.toLowerCase()}`);
+      const cached = getCached(`${SEARCH_MODE}:${cleanQuery.toLowerCase()}`);
+      const active = inFlight.get(`${SEARCH_MODE}:${cleanQuery.toLowerCase()}`);
 
       if (cached || active) {
         console.log(
@@ -1944,11 +2060,85 @@ function showStatus(
     state.mode = "loading";
     input.setAttribute("aria-busy", "true");
 
+    // The instant JEV request gets its own request slot so it never
+    // marks the AI request as stale (and vice versa).
+    const instantLane = {
+      request: 0,
+      controller: null,
+      query: cleanQuery
+    };
+
+    state.instantLane = instantLane;
+
+    let aiFinished = false;
+    let instantShown = null;
+
+    const stillCurrent = () =>
+      state.instantLane === instantLane &&
+      cleanQuery === String(input.value || "").trim();
+
+    const productsOf = response =>
+      Array.isArray(response?.products)
+        ? response.products.slice(0, CFG.maxResults)
+        : [];
+
+    const signatureOf = response =>
+      JSON.stringify([
+        response?.resultType || "",
+        productsOf(response).map(product => product?.handle || product?.title || "")
+      ]);
+
+    // 1. Instant JEV results (shown only until the AI answers).
+    const instantPromise = requestAI(cleanQuery, instantLane, INSTANT_MODE)
+      .then(async ({ result: instant }) => {
+        const instantProducts = productsOf(instant);
+
+        if (!instant || aiFinished || !stillCurrent() || !instantProducts.length) {
+          return;
+        }
+
+        const rendered = await renderAIResults(
+          input,
+          cleanQuery,
+          instantProducts,
+          state,
+          state.request,
+          instant.resultType,
+          instant.message,
+          () => !aiFinished && stillCurrent()
+        );
+
+        if (rendered) {
+          instantShown = instant;
+
+          // The AI is still working on this search.
+          input.setAttribute("aria-busy", "true");
+        }
+      })
+      .catch(() => {
+        // Instant results are best-effort; the AI request decides.
+      });
+
+    // 2. The AI's results (the backend falls back to JEV itself if
+    //    the AI fails). Only once the customer has paused typing
+    //    for CFG.aiPause; typing again before that skips the call.
+    const extraPause = Math.max(0, CFG.aiPause - CFG.debounce);
+
+    if (extraPause) {
+      await new Promise(resolve => setTimeout(resolve, extraPause));
+
+      if (!stillCurrent()) {
+        return;
+      }
+    }
+
     const { result, id } = await requestAI(
       cleanQuery,
       state,
-      "preview"
+      SEARCH_MODE
     );
+
+    aiFinished = true;
 
     if (
       !result ||
@@ -1958,16 +2148,34 @@ function showStatus(
       return;
     }
 
-    const products = Array.isArray(result.products)
-      ? result.products.slice(0, CFG.maxResults)
-      : [];
+    const products = productsOf(result);
 
     if (!products.length) {
+      // Keep instant results rather than replacing them with
+      // nothing.
+      if (instantShown) {
+        input.removeAttribute("aria-busy");
+        return;
+      }
+
       showStatus(
         input,
-        "No products found. Check other available products.",
+        noResultsText(cleanQuery),
         "no-results"
       );
+      return;
+    }
+
+    // AI failed (backend answered with JEV) or AI agrees with what
+    // is already shown: keep the instant results, no flicker.
+    if (
+      instantShown &&
+      (
+        result.servedBy === "jev" ||
+        signatureOf(result) === signatureOf(instantShown)
+      )
+    ) {
+      input.removeAttribute("aria-busy");
       return;
     }
 
@@ -1980,6 +2188,9 @@ function showStatus(
       result.resultType,
       result.message
     );
+
+    // Not awaited earlier; make sure it has settled.
+    await instantPromise;
   }
 
 
@@ -2445,7 +2656,7 @@ function showStatus(
           await requestAI(
             query,
             state,
-            "preview"
+            SEARCH_MODE
           );
 
 
@@ -2469,7 +2680,7 @@ function showStatus(
           showStatus(
             input,
 
-            `No results found for “${query}”. Check the spelling or use a different word or phrase.`,
+            noResultsText(query),
 
             "no-results"
           );
@@ -2491,7 +2702,7 @@ function showStatus(
           showStatus(
             input,
 
-            `No results found for “${query}”. Check the spelling or use a different word or phrase.`,
+            noResultsText(query),
 
             "no-results"
           );
