@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "1321686728aa89ed3aaebfa8c98915ba"
-application_url = "https://example.com"
+application_url = "https://ai-search-app-h59o.onrender.com"
 embedded = true
 name = "Product Search"
 
