@@ -191,6 +191,12 @@ export const loader = async ({
 
 
   } catch (error) {
+    // Shopify's auth responses (expired session -> re-auth, invalid
+    // app proxy signature -> 400/401) must reach the browser as-is.
+    if (error instanceof Response) {
+      throw error;
+    }
+
 
     console.error(
       "[GOAL PRODUCTS PROXY ERROR]",
@@ -203,9 +209,7 @@ export const loader = async ({
         success: false,
 
         message:
-          error instanceof Error
-            ? error.message
-            : "Unable to load products"
+          "Unable to load products"
       },
       {
         status: 500

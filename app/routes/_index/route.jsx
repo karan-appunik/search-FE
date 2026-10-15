@@ -18,9 +18,10 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>AI Product Search</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Let shoppers search your store the way they talk, and find the
+          right products instantly.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -36,16 +37,18 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Natural-language search</strong>. Shoppers can type
+            requests like &quot;something warm for winter&quot; and AI finds
+            the products that match what they mean.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Instant, typo-tolerant results</strong>. Suggestions appear
+            while shoppers type, even with partial words or spelling mistakes,
+            right in your existing theme search bar.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Search rules</strong>. Boost, exclude or demote selected
+            products in search results to match your merchandising goals.
           </li>
         </ul>
       </div>

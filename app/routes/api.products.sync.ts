@@ -254,6 +254,12 @@ export const action = async ({
 
 
   } catch (error) {
+    // Shopify's auth responses (expired session -> re-auth, invalid
+    // app proxy signature -> 400/401) must reach the browser as-is.
+    if (error instanceof Response) {
+      throw error;
+    }
+
 
     console.error(
       "[PRODUCT SYNC ERROR]",
@@ -266,14 +272,7 @@ export const action = async ({
         success: false,
 
         message:
-          error instanceof Error
-            ? error.message
-            : "Product sync failed",
-
-        error:
-          error instanceof Error
-            ? error.stack
-            : String(error)
+          "Product sync failed"
       },
       {
         status: 500

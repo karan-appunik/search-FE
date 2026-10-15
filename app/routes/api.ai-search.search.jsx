@@ -83,6 +83,12 @@ export const loader = async ({ request }) => {
       }
     );
   } catch (error) {
+    // Shopify's auth responses (expired session -> re-auth, invalid
+    // app proxy signature -> 400/401) must reach the browser as-is.
+    if (error instanceof Response) {
+      throw error;
+    }
+
     console.error(
       "[SHOPIFY APP PROXY ERROR]",
       error
