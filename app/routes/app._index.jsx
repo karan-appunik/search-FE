@@ -12,7 +12,16 @@ import { backendInternalFetch } from "../utils/backend.server";
 // derived from product update timestamps (there is no
 // dedicated sync-log table, so this is the honest proxy for
 // it, not an invented value).
+//
+// Also shows the storefront search onboarding: the theme app
+// embed must be turned on in the theme editor, and the
+// "Enable in theme editor" button deep-links there with the
+// embed pre-selected (Shopify's activateAppId link).
 // =========================================================
+
+// File name of the app embed block in
+// extensions/ai-product-search/blocks/ (without .liquid).
+const APP_EMBED_HANDLE = "ai-search-embed";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -22,8 +31,14 @@ export const loader = async ({ request }) => {
     signal: request.signal
   });
 
+  const themeEditorUrl =
+    `https://${session.shop}/admin/themes/current/editor` +
+    // eslint-disable-next-line no-undef
+    `?context=apps&activateAppId=${process.env.SHOPIFY_API_KEY}/${APP_EMBED_HANDLE}`;
+
   return {
     shop: session.shop,
+    themeEditorUrl,
     status: result.ok ? result.data?.data?.shop : null,
     statusError: result.ok ? null : result.data?.message || "Unable to load status"
   };
@@ -42,7 +57,7 @@ function formatDate(value) {
 }
 
 export default function Index() {
-  const { status, statusError } = useLoaderData();
+  const { status, statusError, themeEditorUrl } = useLoaderData();
   const fetcher = useFetcher();
 
   const isSyncing = fetcher.state !== "idle";
@@ -56,11 +71,54 @@ export default function Index() {
     <s-page heading="AI Product Search">
       <s-button
         slot="primary-action"
+        variant="primary"
         onClick={syncProducts}
         {...(isSyncing ? { loading: true } : {})}
       >
         {isSyncing ? "Syncing Products..." : "Sync Products"}
       </s-button>
+
+      <s-section heading="Set up storefront search">
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            AI Product Search works through your theme&apos;s existing
+            search bar. Complete these steps once to turn it on:
+          </s-paragraph>
+
+          <s-ordered-list>
+            <s-list-item>
+              Click <s-text type="strong">Sync Products</s-text> (top right)
+              so your catalog is ready to search.
+            </s-list-item>
+            <s-list-item>
+              Click <s-text type="strong">Enable in theme editor</s-text>{" "}
+              below. Your theme editor opens with{" "}
+              <s-text type="strong">AI Product Search</s-text> selected under
+              App embeds.
+            </s-list-item>
+            <s-list-item>
+              Make sure the <s-text type="strong">AI Product Search</s-text>{" "}
+              toggle is on, then click <s-text type="strong">Save</s-text>.
+            </s-list-item>
+            <s-list-item>
+              Open your online store and try a search, for example a product
+              name or &quot;something warm for winter&quot;.
+            </s-list-item>
+          </s-ordered-list>
+
+          <s-text color="subdued">
+            Using a different theme later? Repeat steps 2 and 3 for the new
+            theme. Products stay in sync automatically when you edit them in
+            Shopify.
+          </s-text>
+
+          <s-box>
+            <s-button variant="primary" href={themeEditorUrl} target="_top">
+              Enable in theme editor
+            </s-button>
+          </s-box>
+        </s-stack>
+      </s-section>
 
       <s-section heading="Dashboard">
         <s-stack direction="block" gap="base">
