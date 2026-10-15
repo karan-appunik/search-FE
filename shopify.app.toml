@@ -52,7 +52,7 @@ customer_deletion_url = "/webhooks/customers/redact"
 shop_deletion_url = "/webhooks/shop/redact"
 
 [auth]
-redirect_urls = ["https://example.com/api/auth"]
+redirect_urls = ["https://ai-search-app-h59o.onrender.com/api/auth"]
 
 [build]
 automatically_update_urls_on_dev = true

@@ -1,7 +1,10 @@
-import { redirect, Form, useLoaderData } from "react-router";
-import { login } from "../../shopify.server";
+import { redirect } from "react-router";
 import styles from "./styles.module.css";
 
+// Public landing page. Installation must start from a
+// Shopify-owned surface (App Store requirement 2.3.1), so there
+// is no "enter your shop domain" form here; merchants install
+// and open the app from Shopify.
 export const loader = async ({ request }) => {
   const url = new URL(request.url);
 
@@ -9,12 +12,10 @@ export const loader = async ({ request }) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return null;
 };
 
 export default function App() {
-  const { showForm } = useLoaderData();
-
   return (
     <div className={styles.index}>
       <div className={styles.content}>
@@ -23,18 +24,10 @@ export default function App() {
           Let shoppers search your store the way they talk, and find the
           right products instantly.
         </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
+        <p>
+          Install AI Product Search from the Shopify App Store, then open it
+          from <strong>Apps</strong> in your Shopify admin.
+        </p>
         <ul className={styles.list}>
           <li>
             <strong>Natural-language search</strong>. Shoppers can type
