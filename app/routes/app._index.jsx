@@ -56,12 +56,23 @@ function formatDate(value) {
   }
 }
 
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
 export default function Index() {
   const { status, statusError, themeEditorUrl } = useLoaderData();
   const fetcher = useFetcher();
 
   const isSyncing = fetcher.state !== "idle";
   const result = fetcher.data;
+
+  // Products count a product once; variants count each variant.
+  // A product is in stock when at least one variant is.
+  const variantsTotal =
+    status?.products?.variants?.total ?? status?.products?.total ?? 0;
+  const variantsInStock =
+    status?.products?.variants?.available ?? status?.products?.available ?? 0;
 
   const syncProducts = () => {
     fetcher.submit({}, { method: "POST", action: "/api/products/sync" });
@@ -109,7 +120,8 @@ export default function Index() {
           <s-text color="subdued">
             Using a different theme later? Repeat steps 2 and 3 for the new
             theme. Products stay in sync automatically when you edit them in
-            Shopify.
+            Shopify. Only active products are searchable; draft and archived
+            products are left out, as they are not on your online store.
           </s-text>
 
           <s-box>
@@ -135,13 +147,26 @@ export default function Index() {
                 <s-stack direction="block" gap="small-200">
                   <s-text color="subdued">Products synced</s-text>
                   <s-heading>{status.products.total}</s-heading>
+                  <s-text color="subdued">Active products in search</s-text>
                 </s-stack>
               </s-box>
 
               <s-box padding="base" borderWidth="base" borderRadius="base">
                 <s-stack direction="block" gap="small-200">
-                  <s-text color="subdued">Available for sale</s-text>
+                  <s-text color="subdued">All products (incl. variants)</s-text>
+                  <s-heading>{variantsTotal}</s-heading>
+                  <s-text color="subdued">Each variant counted separately</s-text>
+                </s-stack>
+              </s-box>
+
+              <s-box padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="small-200">
+                  <s-text color="subdued">In stock</s-text>
                   <s-heading>{status.products.available}</s-heading>
+                  <s-text color="subdued">
+                    {plural(status.products.available, "product")} ·{" "}
+                    {plural(variantsInStock, "variant")}
+                  </s-text>
                 </s-stack>
               </s-box>
 
@@ -149,6 +174,10 @@ export default function Index() {
                 <s-stack direction="block" gap="small-200">
                   <s-text color="subdued">Out of stock</s-text>
                   <s-heading>{status.products.unavailable}</s-heading>
+                  <s-text color="subdued">
+                    {plural(status.products.unavailable, "product")} ·{" "}
+                    {plural(variantsTotal - variantsInStock, "variant")}
+                  </s-text>
                 </s-stack>
               </s-box>
 
@@ -185,11 +214,27 @@ export default function Index() {
         <s-banner tone="success">
           Product sync completed successfully.
           <s-stack direction="block" gap="small">
-            <s-text>Shop: {result.shop}</s-text>
-            <s-text>Products found: {result.productsFound}</s-text>
-            <s-text>Products synced: {result.synced}</s-text>
-            <s-text>Products skipped: {result.skipped}</s-text>
-            <s-text>Products deleted: {result.deleted}</s-text>
+            <s-text>Products in Shopify: {result.shopifyProducts}</s-text>
+            <s-text>Products synced: {result.productsSynced}</s-text>
+            <s-text>
+              All products (incl. variants): {result.variantsSynced}
+            </s-text>
+            {result.notActiveProducts > 0 && (
+              <s-text>
+                Not synced: {result.notActiveProducts} draft or archived
+                product{result.notActiveProducts === 1 ? "" : "s"} (not
+                shown on your online store, so not searchable)
+              </s-text>
+            )}
+            {result.productsRemoved > 0 && (
+              <s-text>
+                Removed from search: {result.productsRemoved} product
+                {result.productsRemoved === 1 ? "" : "s"} no longer active
+              </s-text>
+            )}
+            {result.skipped > 0 && (
+              <s-text>Variants skipped: {result.skipped}</s-text>
+            )}
           </s-stack>
         </s-banner>
       )}

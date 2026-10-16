@@ -41,6 +41,23 @@ export const action = async ({ request }) => {
       return new Response();
     }
 
+    // Only active products are searchable (same rule as the full
+    // sync): a product set to draft or archived leaves search.
+    if (product.status && product.status !== "ACTIVE") {
+      const removed = await backendInternalFetch("/api/internal/products/webhook-delete", {
+        method: "POST",
+        body: { shop, shopifyProductId: product.id }
+      });
+
+      if (!removed.ok) {
+        console.error(`[${topic}] Backend removal of non-active product failed`, { shop, productId, result: removed.data });
+      } else {
+        console.log(`[${topic}] Product is ${product.status}, removed from search`, { shop, productId, result: removed.data });
+      }
+
+      return new Response();
+    }
+
     const result = await backendInternalFetch("/api/internal/products/webhook-upsert", {
       method: "POST",
       body: { shop, currency, product }
