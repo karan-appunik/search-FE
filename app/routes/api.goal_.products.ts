@@ -47,7 +47,7 @@ export const loader = async ({
     ) {
 
       throw new Error(
-        "BACKEND_URL is missing in ai-product-search/.env"
+        "BACKEND_URL is not set (add it under Environment on Render)"
       );
 
     }
@@ -58,7 +58,7 @@ export const loader = async ({
     ) {
 
       throw new Error(
-        "INTERNAL_API_SECRET is missing in ai-product-search/.env"
+        "INTERNAL_API_SECRET is not set (add it under Environment on Render)"
       );
 
     }
