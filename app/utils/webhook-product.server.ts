@@ -21,6 +21,7 @@ const PRODUCT_QUERY = `
 
     product(id: $id) {
       id
+      status
       handle
       title
       description
@@ -35,6 +36,42 @@ const PRODUCT_QUERY = `
       }
 
       variants(first: 100) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          title
+          sku
+          price
+          compareAtPrice
+          availableForSale
+          inventoryQuantity
+
+          inventoryItem {
+            id
+          }
+
+          image {
+            url
+            altText
+          }
+        }
+      }
+    }
+  }
+`;
+
+// Remaining variants of products with more than 100 of them.
+const MORE_VARIANTS_QUERY = `
+  query GetWebhookProductVariants($id: ID!, $after: String) {
+    product(id: $id) {
+      variants(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           id
           title
@@ -83,8 +120,28 @@ export async function fetchWebhookProduct(
     throw new Error(`Shopify GraphQL request failed: ${JSON.stringify(result.errors)}`);
   }
 
+  const product = result?.data?.product || null;
+  let variantsPage = product?.variants?.pageInfo;
+
+  while (product && variantsPage?.hasNextPage) {
+    const moreResponse = await admin.graphql(MORE_VARIANTS_QUERY, {
+      variables: { id: productId, after: variantsPage.endCursor }
+    });
+
+    const more = await moreResponse.json();
+
+    if (more.errors) {
+      throw new Error(`Shopify GraphQL request failed: ${JSON.stringify(more.errors)}`);
+    }
+
+    const variants = more?.data?.product?.variants;
+
+    product.variants.nodes.push(...(variants?.nodes || []));
+    variantsPage = variants?.pageInfo;
+  }
+
   return {
-    product: result?.data?.product || null,
+    product,
     currency: result?.data?.shop?.currencyCode || "USD"
   };
 }

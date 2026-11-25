@@ -14,7 +14,7 @@
 
 function getBackendUrl(): string {
   if (!process.env.BACKEND_URL) {
-    throw new Error("BACKEND_URL is missing in ai-product-search/.env");
+    throw new Error("BACKEND_URL is not set (add it under Environment on Render)");
   }
 
   return process.env.BACKEND_URL;
@@ -22,7 +22,7 @@ function getBackendUrl(): string {
 
 function getInternalSecret(): string {
   if (!process.env.INTERNAL_API_SECRET) {
-    throw new Error("INTERNAL_API_SECRET is missing in ai-product-search/.env");
+    throw new Error("INTERNAL_API_SECRET is not set (add it under Environment on Render)");
   }
 
   return process.env.INTERNAL_API_SECRET;

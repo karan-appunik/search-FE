@@ -4,7 +4,7 @@
 - Add declarative product metafield definition and demonstrate metafield usage in the product creation flow
 - Add declarative metaobject definition and demonstrate metaobject upsert in the product creation flow
 
-## 2026.01.08
+## 2026.01.08   
 - [#170](https://github.com/Shopify/shopify-app-template-react-router/pull/170) - Update React Router minimum version to v7.12.0
 
 ## 2025.12.11

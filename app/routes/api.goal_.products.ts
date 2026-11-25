@@ -12,6 +12,7 @@ import {
 // =========================================================
 //
 // GET /api/goal/products?page=&limit=&search=
+//     optional: &sort= &inStock=1 &productType=
 //
 // Authenticated admin-only resource route. Resolves the shop
 // from the Shopify session (never from client input) and
@@ -47,7 +48,7 @@ export const loader = async ({
     ) {
 
       throw new Error(
-        "BACKEND_URL is missing in ai-product-search/.env"
+        "BACKEND_URL is not set (add it under Environment on Render)"
       );
 
     }
@@ -58,7 +59,7 @@ export const loader = async ({
     ) {
 
       throw new Error(
-        "INTERNAL_API_SECRET is missing in ai-product-search/.env"
+        "INTERNAL_API_SECRET is not set (add it under Environment on Render)"
       );
 
     }
@@ -119,6 +120,25 @@ export const loader = async ({
         "search",
         search
       );
+
+    }
+
+
+    // Optional sort / filters, passed through as-is (the
+    // backend whitelists them).
+    for (const key of ["sort", "inStock", "productType"]) {
+
+      const value =
+        url.searchParams.get(key);
+
+      if (value) {
+
+        backendUrl.searchParams.set(
+          key,
+          value.slice(0, 200)
+        );
+
+      }
 
     }
 
@@ -191,6 +211,12 @@ export const loader = async ({
 
 
   } catch (error) {
+    // Shopify's auth responses (expired session -> re-auth, invalid
+    // app proxy signature -> 400/401) must reach the browser as-is.
+    if (error instanceof Response) {
+      throw error;
+    }
+
 
     console.error(
       "[GOAL PRODUCTS PROXY ERROR]",
@@ -203,9 +229,7 @@ export const loader = async ({
         success: false,
 
         message:
-          error instanceof Error
-            ? error.message
-            : "Unable to load products"
+          "Unable to load products"
       },
       {
         status: 500

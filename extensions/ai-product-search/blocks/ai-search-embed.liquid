@@ -1,12 +1,30 @@
+{%- comment -%}
+  Merchant search questions (admin: Search Questions page),
+  stored as the app-data metafield ai_search.search_questions.
+  Only passed to ai-search.js when switched on with 5–7
+  questions; otherwise the attribute is left out and search
+  behaves exactly as before.
+{%- endcomment -%}
+{%- liquid
+  assign aips_questions = app.metafields.ai_search.search_questions.value
+  assign aips_show_questions = false
+
+  if aips_questions.enabled == true and aips_questions.questions.size >= 5 and aips_questions.questions.size <= 7
+    assign aips_show_questions = true
+  endif
+-%}
 <div
   id="ai-product-search-root"
   data-ai-product-search
   data-shop="{{ shop.permanent_domain }}"
+  {%- if aips_show_questions %}
+  data-search-questions="{{ aips_questions | json | escape }}"
+  {%- endif %}
 ></div>
 
 {% schema %}
 {
-  "name": "AI Product Search",
+  "name": "Askmerce",
   "target": "body",
   "javascript": "ai-search.js",
   "settings": []

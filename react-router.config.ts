@@ -42,11 +42,29 @@ import type { Config } from "@react-router/dev/config";
 // check, which still run in full inside each route.
 //
 // Production deployments behind their own TLS-terminating
-// reverse proxy could hit the same class of mismatch; if so,
-// add that deployment's own domain here rather than assuming
-// this pattern covers it.
+// reverse proxy hit the same mismatch: Render terminates HTTPS
+// and forwards plain HTTP, so every action (Sync Products,
+// Save/Delete Rule) failed with 400 there. The production
+// domain is listed explicitly; SHOPIFY_APP_URL, if present at
+// build time, is added too (e.g. a future custom domain).
 // =========================================================
 
+const PRODUCTION_HOSTS = ["ai-search-app-h59o.onrender.com"];
+
+function hostOf(url: string | undefined) {
+  try {
+    return url ? new URL(url).host : null;
+  } catch {
+    return null;
+  }
+}
+
+const buildTimeHost = hostOf(process.env.SHOPIFY_APP_URL);
+
 export default {
-  allowedActionOrigins: ["*.trycloudflare.com"]
+  allowedActionOrigins: [
+    "*.trycloudflare.com",
+    ...PRODUCTION_HOSTS,
+    ...(buildTimeHost && !PRODUCTION_HOSTS.includes(buildTimeHost) ? [buildTimeHost] : [])
+  ]
 } satisfies Config;

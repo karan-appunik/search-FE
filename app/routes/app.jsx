@@ -2,6 +2,18 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
+import adminStyles from "../styles/admin-ui.css?url";
+
+// Admin page design (see app/components/ui.jsx).
+export const links = () => [
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap"
+  },
+  { rel: "stylesheet", href: adminStyles }
+];
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -16,9 +28,11 @@ export default function App() {
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app">Dashboard</s-link>
+        {/* rel="home": opened by clicking the app name; not listed in the menu. */}
+        <s-link href="/app" rel="home">Dashboard</s-link>
         <s-link href="/app/goal-products">Goals &amp; Rules</s-link>
-        <s-link href="/app/search-preview">Search Preview</s-link>
+        {/* Search Preview is hidden for now (the page and its API route still exist). */}
+        <s-link href="/app/search-questions">Search Questions</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

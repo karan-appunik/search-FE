@@ -35,12 +35,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     return Response.json(result.data, { status: result.status });
   } catch (error) {
+    // Shopify's auth responses (expired session -> re-auth, invalid
+    // app proxy signature -> 400/401) must reach the browser as-is.
+    if (error instanceof Response) {
+      throw error;
+    }
+
     console.error("[GOAL PROXY LOAD ERROR]", error);
 
     return Response.json(
       {
         success: false,
-        message: error instanceof Error ? error.message : "Unable to load goal"
+        message: "Unable to load goal"
       },
       { status: 500 }
     );
@@ -98,17 +104,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       { status: 405 }
     );
   } catch (error) {
+    // Shopify's auth responses (expired session -> re-auth, invalid
+    // app proxy signature -> 400/401) must reach the browser as-is.
+    if (error instanceof Response) {
+      throw error;
+    }
+
     console.error("[GOAL PROXY ACTION ERROR]", { method: request.method, error });
 
     return Response.json(
       {
         success: false,
         message:
-          error instanceof Error
-            ? error.message
-            : request.method === "DELETE"
-              ? "Unable to delete goal"
-              : "Unable to save goal"
+          request.method === "DELETE"
+            ? "Unable to delete goal"
+            : "Unable to save goal"
       },
       { status: 500 }
     );

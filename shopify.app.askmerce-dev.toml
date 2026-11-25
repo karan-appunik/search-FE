@@ -1,0 +1,65 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+#
+# Askmerce Dev: development copy of Askmerce (new organization), used with
+#   shopify app dev --config askmerce-dev --store <dev store>
+# The live App Store app is shopify.app.askmerce.toml.
+
+client_id = "f5d36daa8567b71991f81d2f1220f09e"
+# Placeholder: `shopify app dev` replaces it with its tunnel URL.
+application_url = "https://example.com"
+embedded = true
+name = "Askmerce Dev"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_inventory,read_products,write_app_proxy"
+
+# Same storefront path as the live app (the storefront script calls
+# /apps/askmerce/*). Don't install Askmerce and Askmerce Dev on the
+# same store.
+[app_proxy]
+url = "/api/ai-search"
+prefix = "apps"
+subpath = "askmerce"
+
+[webhooks]
+# Same version as the app code (ApiVersion.July26 in app/shopify.server.js).
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/uninstalled"
+topics = ["app/uninstalled"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/scopes_update"
+topics = ["app/scopes_update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/create"
+topics = ["products/create"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/update"
+topics = ["products/update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/delete"
+topics = ["products/delete"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/inventory_levels/update"
+topics = ["inventory_levels/update"]
+
+# Mandatory GDPR compliance webhooks (same handlers as the live app).
+[webhooks.privacy_compliance]
+customer_data_request_url = "/webhooks/customers/data_request"
+customer_deletion_url = "/webhooks/customers/redact"
+shop_deletion_url = "/webhooks/shop/redact"
+
+[auth]
+redirect_urls = [ "https://example.com/api/auth" ]
+
+[build]
+include_config_on_deploy = true
+# Development app: let `shopify app dev` use its tunnel URL.
+automatically_update_urls_on_dev = true

@@ -43,12 +43,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     return Response.json(result.data, { status: result.status });
   } catch (error) {
+    // Shopify's auth responses (expired session -> re-auth, invalid
+    // app proxy signature -> 400/401) must reach the browser as-is.
+    if (error instanceof Response) {
+      throw error;
+    }
+
     console.error("[SEARCH PREVIEW PROXY ERROR]", error);
 
     return Response.json(
       {
         success: false,
-        message: error instanceof Error ? error.message : "Search preview failed"
+        message: "Search preview failed"
       },
       { status: 500 }
     );

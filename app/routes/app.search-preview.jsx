@@ -1,6 +1,19 @@
 import { useState } from "react";
 import { useFetcher } from "react-router";
 
+import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  ChoiceCards,
+  EmptyState,
+  Page,
+  PageHeader,
+  ProductMedia,
+  TextField
+} from "../components/ui";
+
 // =========================================================
 // SEARCH PREVIEW
 // =========================================================
@@ -9,135 +22,218 @@ import { useFetcher } from "react-router";
 // admin. Calls the existing /api/ai-search/search endpoint
 // through api.search-preview.ts — the exact same backend
 // endpoint the storefront widget uses. No new search logic,
-// no ranking change.
-//
-// Only what the API actually returns is shown. It does not
-// return retrieval candidate counts or timing — those are
-// only ever written to the backend's server logs, not the
-// HTTP response — so this page says so rather than inventing
-// diagnostic detail that was never sent.
+// no ranking change. Only what the API returns is shown.
 // =========================================================
+
+const MODES = [
+  {
+    value: "final",
+    label: "Search results page",
+    description: "What shoppers get after pressing Enter or picking a question."
+  },
+  {
+    value: "preview",
+    label: "Instant suggestions",
+    description: "The quick results in the dropdown while shoppers type."
+  }
+];
+
+// General enough to make sense for any store's catalog.
+const EXAMPLES = [
+  "a thoughtful gift for a friend",
+  "something for everyday use"
+];
+
+const MAX_QUERY_LENGTH = 200;
+
+// Plain-language names for the result types the API returns.
+// Calm, neutral colours only: none of these is an error.
+const RESULT_TYPES = {
+  direct: { label: "Exact matches", tone: "accent" },
+  recommended: { label: "Recommended", tone: "accent" },
+  alternative: { label: "Closest matches" },
+  none: { label: "No exact match" }
+};
 
 export default function SearchPreview() {
   const fetcher = useFetcher();
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState("final");
+  const [inputError, setInputError] = useState("");
+  const [searched, setSearched] = useState(null);
 
   const isLoading = fetcher.state !== "idle";
   const result = fetcher.data;
 
-  const runSearch = () => {
-    const clean = query.trim();
+  const runSearch = (value = query) => {
+    const clean = value.trim();
 
     if (!clean) {
+      setInputError("Type a search first, the way a shopper would.");
       return;
     }
+
+    if (clean.length > MAX_QUERY_LENGTH) {
+      setInputError(`Keep it under ${MAX_QUERY_LENGTH} characters.`);
+      return;
+    }
+
+    setInputError("");
+    setSearched({ query: clean, mode });
 
     const params = new URLSearchParams({ q: clean, mode });
 
     fetcher.load(`/api/search-preview?${params.toString()}`);
   };
 
-  return (
-    <s-page heading="Search Preview">
-      <s-section heading="Test a Search Query">
-        <s-stack direction="block" gap="base">
-          <s-paragraph>
-            Enter a query the way a customer would search your
-            storefront. This calls the same backend search API
-            the theme search bar uses.
-          </s-paragraph>
+  const tryExample = (example) => {
+    setQuery(example);
+    runSearch(example);
+  };
 
-          <s-search-field
-            label="Search query"
-            placeholder="e.g. best shampoo for hair fall"
+  const products = Array.isArray(result?.products) ? result.products : [];
+  const resultType = RESULT_TYPES[result?.resultType] || null;
+  const modeLabel = MODES.find((item) => item.value === searched?.mode)?.label;
+
+  return (
+    <Page narrow>
+      <PageHeader
+        backTo="/app"
+        title="Search preview"
+        subtitle="See exactly which products shoppers get for any search, before they do."
+      />
+
+      <Card>
+        <div className="ui-stack" style={{ gap: 16 }}>
+          <TextField
+            id="preview-query"
+            label="What would a shopper search for?"
+            icon="search"
+            placeholder="e.g. gift for someone who loves coffee"
             value={query}
-            onChange={(event) => setQuery(event?.currentTarget?.value ?? "")}
+            maxLength={MAX_QUERY_LENGTH + 1}
+            error={inputError || undefined}
+            onChange={(value) => {
+              setQuery(value);
+
+              if (inputError) {
+                setInputError("");
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                runSearch();
+              }
+            }}
           />
 
-          <s-choice-list
-            label="Mode"
+          <div className="pv-examples">
+            <span>Try:</span>
+            {EXAMPLES.map((example) => (
+              <button
+                key={example}
+                type="button"
+                className="pv-example"
+                onClick={() => tryExample(example)}
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+
+          <ChoiceCards
             name="mode"
-            multiple={false}
-            values={[mode]}
-            onChange={(event) =>
-              setMode(event?.currentTarget?.values?.[0] || "final")
-            }
-          >
-            <s-choice value="final" details="The full AI-ranked search customers get on the results page.">
-              Final
-            </s-choice>
-            <s-choice value="preview" details="The fast predictive-search path used while typing.">
-              Preview
-            </s-choice>
-          </s-choice-list>
+            label="Where shoppers see it"
+            options={MODES}
+            value={mode}
+            onChange={setMode}
+          />
 
-          <s-button
-            variant="primary"
-            onClick={runSearch}
-            {...(isLoading ? { loading: true } : {})}
-            {...(!query.trim() ? { disabled: true } : {})}
-          >
-            {isLoading ? "Searching…" : "Run Search"}
-          </s-button>
+          <div className="pv-actions">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="sparkle"
+              loading={isLoading}
+              onClick={() => runSearch()}
+            >
+              {isLoading ? "Searching…" : "Run search"}
+            </Button>
+            <span className="ui-help">
+              Searches your live catalog. Nothing in your store or app will change.
+            </span>
+          </div>
+        </div>
+      </Card>
 
-          {result?.success === false && (
-            <s-banner tone="critical">
-              {result.message || "Search failed"}
-            </s-banner>
-          )}
+      {!isLoading && result?.success === false && (
+        <Banner tone="critical">
+          <p>
+            <strong>We couldn&apos;t run this search right now.</strong>{" "}
+            {result.message && result.message !== "Search preview failed"
+              ? `${result.message}. `
+              : ""}
+            Please try again in a moment.
+          </p>
+        </Banner>
+      )}
 
-          {result?.success === true && (
-            <s-stack direction="block" gap="base">
-              <s-box padding="base" borderWidth="base" borderRadius="base">
-                <s-stack direction="block" gap="small-200">
-                  <s-text>Intent: {result.intent || "—"}</s-text>
-                  {result.resultType && (
-                    <s-text>Result type: {result.resultType}</s-text>
+      {result?.success === true && searched ? (
+        <Card
+          title={`Results for “${searched.query}”`}
+          description={
+            result.message ||
+            `${products.length} ${products.length === 1 ? "product" : "products"}, in the order shoppers see them on the ${modeLabel ? modeLabel.toLowerCase() : "store"}.`
+          }
+          aside={resultType && <Badge tone={resultType.tone}>{resultType.label}</Badge>}
+        >
+          {products.length > 0 ? (
+            <div className="ui-product-grid">
+              {products.map((product, index) => (
+                <div className="ui-product" key={product.sku || index}>
+                  <span className="ui-rank">#{index + 1}</span>
+                  <ProductMedia image={product.image} title={product.title} />
+                  <span className="ui-product__title">
+                    {product.title || "Untitled product"}
+                  </span>
+                  <span className="ui-product__meta">
+                    {product.sku ? `SKU: ${product.sku}` : "No SKU"}
+                  </span>
+                  {typeof product.recommendationScore === "number" && (
+                    <span className="ui-product__meta">
+                      Match score: <strong>{product.recommendationScore}</strong>
+                    </span>
                   )}
-                  {result.message && (
-                    <s-text color="subdued">{result.message}</s-text>
-                  )}
-                  <s-text color="subdued">
-                    Candidate counts and retrieval timings are
-                    only written to the backend&apos;s server
-                    logs — the search API response does not
-                    include them, so they cannot be shown here.
-                  </s-text>
-                </s-stack>
-              </s-box>
-
-              {Array.isArray(result.products) && result.products.length > 0 ? (
-                <s-grid
-                  gridTemplateColumns="repeat(auto-fill, minmax(200px, 1fr))"
-                  gap="base"
-                >
-                  {result.products.map((product, index) => (
-                    <s-grid-item key={product.sku || index}>
-                      <s-box padding="base" borderWidth="base" borderRadius="base">
-                        <s-stack direction="block" gap="small-200">
-                          <s-text color="subdued">#{index + 1}</s-text>
-                          <s-text type="strong">
-                            {product.title || "Untitled product"}
-                          </s-text>
-                          <s-text color="subdued">SKU: {product.sku}</s-text>
-                          {typeof product.recommendationScore === "number" && (
-                            <s-text color="subdued">
-                              Score: {product.recommendationScore}
-                            </s-text>
-                          )}
-                        </s-stack>
-                      </s-box>
-                    </s-grid-item>
-                  ))}
-                </s-grid>
-              ) : (
-                <s-banner tone="info">No products returned for this query.</s-banner>
-              )}
-            </s-stack>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon="search">
+              No products found for this search. Try different words, or check that the
+              product is active and synced.
+            </EmptyState>
           )}
-        </s-stack>
-      </s-section>
-    </s-page>
+        </Card>
+      ) : (
+        result?.success !== false &&
+        !isLoading && (
+          <section className="ui-card ui-card--dashed">
+            <EmptyState icon="list">
+              Results appear here, ranked in the order shoppers see them.
+            </EmptyState>
+          </section>
+        )
+      )}
+
+      {isLoading && (
+        <section className="ui-card ui-card--dashed">
+          <div className="ui-empty">
+            <span className="ui-spinner ui-spinner--accent" aria-hidden="true" />
+            <div>Searching your catalog…</div>
+          </div>
+        </section>
+      )}
+    </Page>
   );
 }
