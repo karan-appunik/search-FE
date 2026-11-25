@@ -16,12 +16,6 @@
   // that stored only `true` in this global. If any copy already owns the
   // storefront, this copy must not attach another input listener.
   if (existingRuntime) {
-    console.log(
-      "[AI Product Search] Existing runtime detected; skipping duplicate initialization.",
-      typeof existingRuntime === "object"
-        ? (existingRuntime.runtimeId || "unknown")
-        : "legacy-runtime"
-    );
     return;
   }
 
@@ -47,9 +41,12 @@
   debounce: 200,
   // The AI request waits for a slightly longer typing pause than
   // the instant (JEV) one, so half-typed words don't each start
-  // an AI call.
-  aiPause: 400,
+  // an AI call. 300ms (was 400ms): the AI answer starts 0.1s sooner.
+  aiPause: 300,
   maxResults: 6,
+  // Instant local results: the in-stock product list is kept in the
+  // browser this long before it's fetched again.
+  localCatalogTtl: 5 * 60 * 1000,
   cacheTtl: 60000,
   cacheSize: 30,
   pendingSearchKey:
@@ -67,6 +64,13 @@
    */
   const SEARCH_MODE = "final";
   const INSTANT_MODE = "preview";
+
+  // Marks a render of instant local results (see LOCAL CATALOG).
+  const LOCAL_REQUEST = "local";
+
+  // Storefront path of this app's app proxy ([app_proxy] prefix +
+  // subpath in shopify.app.askmerce.toml): /apps/askmerce/*.
+  const APP_PROXY_PATH = "apps/askmerce";
 
   const states = new WeakMap();
   // Shared across the whole storefront runtime. This is important because
@@ -369,6 +373,30 @@
      * behavior and rendering remain native.
      */
     if (!state.nativeMethodsPatched) {
+      // The theme's predictive-search custom element may not be
+      // defined yet (its script can load after this one, e.g. on
+      // heavier pages like /search). Its methods don't exist
+      // until then, so patch once it is defined instead of
+      // marking it patched now and leaving native search active.
+      const tagName = host.tagName.toLowerCase();
+
+      if (
+        tagName.includes("-") &&
+        window.customElements &&
+        !window.customElements.get(tagName)
+      ) {
+        if (!state.nativePatchPending) {
+          state.nativePatchPending = true;
+
+          window.customElements.whenDefined(tagName).then(() => {
+            state.nativePatchPending = false;
+            patchPredictiveHost(input);
+          });
+        }
+
+        return;
+      }
+
       state.nativeMethodsPatched = true;
       state.originalOnChange =
         typeof host.onChange === "function"
@@ -482,7 +510,6 @@
     state,
     mode = "preview"
   ) {
-console.log("[AI SEARCH DEBUG] calling requestAI", query);
     const normalizedQuery =
       String(
         query || ""
@@ -517,10 +544,6 @@ console.log("[AI SEARCH DEBUG] calling requestAI", query);
         id;
 
 
-      console.log(
-        "[AI Product Search] Using cached AI result:",
-        cacheKey
-      );
 
 
       return {
@@ -545,10 +568,6 @@ console.log("[AI SEARCH DEBUG] calling requestAI", query);
 
 
     if (existing) {
-      console.log(
-        "[AI Product Search] DEDUP: exact request already in flight:",
-        cacheKey
-      );
 
       const id =
         nextSequence();
@@ -576,10 +595,6 @@ console.log("[AI SEARCH DEBUG] calling requestAI", query);
       }
 
 
-      console.log(
-        "[AI Product Search] Reused in-flight AI result:",
-        cacheKey
-      );
 
 
       return {
@@ -613,7 +628,7 @@ console.log("[AI SEARCH DEBUG] calling requestAI", query);
 
 
     const url =
-      "/apps/ai-search/search?q=" +
+      `/${APP_PROXY_PATH}/search?q=` +
       encodeURIComponent(query) +
       "&mode=" +
       encodeURIComponent(mode);
@@ -622,14 +637,8 @@ console.log("[AI SEARCH DEBUG] calling requestAI", query);
     const promise =
       (async () => {
 
-        const started =
-          performance.now();
 
 
-        console.log(
-          "[AI Product Search] Sending AI request:",
-          { query, mode, requestId: id, runtimeId: runtime.runtimeId }
-        );
 
 
         const response =
@@ -667,12 +676,6 @@ console.log("[AI SEARCH DEBUG] calling requestAI", query);
           await response.json();
 
 
-        console.log(
-          `[AI Product Search] AI response: ${Math.round(
-            performance.now() -
-            started
-          )}ms`
-        );
 
 
         setCached(
@@ -838,27 +841,204 @@ console.log("[AI SEARCH DEBUG] calling requestAI", query);
   // FETCH NATIVE SHOPIFY MARKUP
   // =========================================================
 
+  // ---------------------------------------------------------
+  // Which section renders the theme's predictive search
+  // ---------------------------------------------------------
+
+  const PREDICTIVE_SECTION_DEFAULT = "predictive-search";
+  const PREDICTIVE_SECTION_NONE = "__none__";
+
+  function predictiveSectionKey() {
+    return `ai-product-search:predictive-section:${window.Shopify?.theme?.id || ""}`;
+  }
+
+  function rememberPredictiveSection(sectionId) {
+    try {
+      window.sessionStorage.setItem(predictiveSectionKey(), sectionId);
+    } catch (error) {
+      // Storage unavailable: it is simply worked out again.
+    }
+  }
+
+  function predictiveSectionCandidates(input) {
+    let remembered = "";
+
+    try {
+      remembered = window.sessionStorage.getItem(predictiveSectionKey()) || "";
+    } catch (error) {
+      // ignore
+    }
+
+    if (remembered === PREDICTIVE_SECTION_NONE) {
+      return [];
+    }
+
+    const candidates = [];
+    const add = value => {
+      const id = String(value || "").trim();
+
+      if (/^[\w-]{1,80}$/.test(id) && !candidates.includes(id)) {
+        candidates.push(id);
+      }
+    };
+
+    add(remembered);
+
+    // Section names the theme puts on its search component.
+    try {
+      const host = getPredictiveHost(input);
+      const nearby = [];
+
+      for (let element = input; element && element !== document.body; element = element.parentElement) {
+        nearby.push(element);
+      }
+
+      if (host) {
+        nearby.push(...host.querySelectorAll("[data-section-id], [data-section], [section-id]"));
+      }
+
+      nearby.forEach(element => {
+        ["data-section-id", "data-section", "section-id"].forEach(name => {
+          const value = element.getAttribute && element.getAttribute(name);
+
+          if (value && /search|predictive/i.test(value) && candidates.length < 3) {
+            add(value);
+          }
+        });
+      });
+    } catch (error) {
+      // ignore
+    }
+
+    add(PREDICTIVE_SECTION_DEFAULT);
+    return candidates;
+  }
+
+  function escapeHtmlText(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatSuggestionPrice(price) {
+    const amount = Number(price);
+
+    if (!price || Number.isNaN(amount)) {
+      return "";
+    }
+
+    try {
+      const currency = window.Shopify?.currency?.active;
+
+      if (currency) {
+        return new Intl.NumberFormat(document.documentElement.lang || undefined, {
+          style: "currency",
+          currency
+        }).format(amount);
+      }
+    } catch (error) {
+      // fall through
+    }
+
+    return amount.toFixed(2);
+  }
+
+  function safeUrl(value) {
+    const url = String(value || "").trim();
+
+    return /^(https?:)?\/\//i.test(url) || url.startsWith("/") ? url : "";
+  }
+
+  /*
+   * For themes without a predictive-search section: the same
+   * AI-selected products from Shopify's standard suggestion
+   * data, as simple rows (image, title, price) that take the
+   * theme's font and colours. Only used when the theme has no
+   * section to render them itself.
+   */
+  async function fetchSuggestionRows(root, params, signal, aiProducts) {
+    const response = await fetch(
+      `${root}search/suggest.json?${params.toString()}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "X-AI-Search-Internal": "1"
+        },
+        credentials: "same-origin",
+        signal
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Native Shopify search failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const products = data?.resources?.results?.products;
+
+    if (!Array.isArray(products) || !products.length) {
+      return "";
+    }
+
+    // Same order as the AI ranked them.
+    const order = (Array.isArray(aiProducts) ? aiProducts : [])
+      .map(product => String(product?.handle || "").trim())
+      .filter(Boolean);
+    const rank = product => {
+      const index = order.indexOf(String(product?.handle || ""));
+      return index === -1 ? order.length : index;
+    };
+
+    products.sort((a, b) => rank(a) - rank(b));
+
+    const rows = products.map(product => {
+      const href = safeUrl(product.url) || (product.handle ? `/products/${encodeURIComponent(product.handle)}` : "");
+
+      if (!href) {
+        return "";
+      }
+
+      let image = safeUrl(product.featured_image?.url || product.image);
+
+      if (image) {
+        image += `${image.includes("?") ? "&" : "?"}width=120`;
+      }
+
+      const price = formatSuggestionPrice(product.price);
+
+      return `<li role="option" aria-selected="false" style="list-style:none;margin:0;">` +
+        `<a href="${escapeHtmlText(href)}" style="display:flex;align-items:center;gap:12px;padding:8px 16px;color:inherit;text-decoration:none;">` +
+        (image
+          ? `<img src="${escapeHtmlText(image)}" alt="" width="48" height="48" loading="lazy" style="width:48px;height:48px;object-fit:cover;border-radius:4px;flex:none;">`
+          : "") +
+        `<span style="display:flex;flex-direction:column;min-width:0;">` +
+        `<span>${escapeHtmlText(product.title)}</span>` +
+        (price ? `<span style="opacity:0.75;font-size:0.9em;">${escapeHtmlText(price)}</span>` : "") +
+        `</span></a></li>`;
+    }).join("");
+
+    return rows
+      ? `<ul role="listbox" data-ai-search-rows style="list-style:none;margin:0;padding:6px 0;">${rows}</ul>`
+      : "";
+  }
+
   async function fetchNativeMarkup(
     query,
     input,
-    signal
+    signal,
+    aiProducts
   ) {
 
-    const markupStartedAt = performance.now();
 
-console.log(
-  "[AI Product Search] Shopify markup START:",
-  query
-);
 
     const container =
       getResultContainer(
         input
       );
-
-
-    const sectionId =
-      "predictive-search";
 
 
     const root =
@@ -880,12 +1060,6 @@ console.log(
     params.set(
       "q",
       query
-    );
-
-
-    params.set(
-      "section_id",
-      sectionId
     );
 
 
@@ -915,51 +1089,75 @@ console.log(
     );
 
 
-    const response =
-      await fetch(
-        `${root}search/suggest?${params.toString()}`,
-        {
-          method:
-            "GET",
+    /*
+     * The theme's predictive-search section is "predictive-search"
+     * in Dawn-family themes, but other themes name it differently
+     * and Shopify answers 404 for a section the theme doesn't
+     * have. Try the name that worked before on this store, names
+     * the theme exposes near its search box, then the standard
+     * one. If none exists, build simple rows from Shopify's
+     * standard suggestion data (works on every store).
+     */
+    let sectionId = "";
+    let html = "";
 
-          headers: {
-            Accept:
-              "text/html",
+    for (const candidate of predictiveSectionCandidates(input)) {
+      // Same parameter order as before (q, section_id, ...).
+      const sectionParams = new URLSearchParams();
+      sectionParams.set("q", query);
+      sectionParams.set("section_id", candidate);
 
-            /*
-             * Allow our patched fetch wrapper
-             * to pass this request through.
-             */
-            "X-AI-Search-Internal":
-              "1"
-          },
-
-          credentials:
-            "same-origin",
-
-          signal
+      params.forEach((value, key) => {
+        if (key !== "q") {
+          sectionParams.append(key, value);
         }
-      );
+      });
 
+      const response =
+        await fetch(
+          `${root}search/suggest?${sectionParams.toString()}`,
+          {
+            method:
+              "GET",
 
-    if (
-      !response.ok
-    ) {
+            headers: {
+              Accept:
+                "text/html",
 
-      throw new Error(
-        `Native Shopify search failed: ${response.status}`
-      );
+              /*
+               * Allow our patched fetch wrapper
+               * to pass this request through.
+               */
+              "X-AI-Search-Internal":
+                "1"
+            },
+
+            credentials:
+              "same-origin",
+
+            signal
+          }
+        );
+
+      if (response.ok) {
+        sectionId = candidate;
+        html = await response.text();
+        rememberPredictiveSection(candidate);
+        break;
+      }
+
+      if (response.status !== 404) {
+        throw new Error(
+          `Native Shopify search failed: ${response.status}`
+        );
+      }
     }
 
+    if (!sectionId) {
+      rememberPredictiveSection(PREDICTIVE_SECTION_NONE);
+      return fetchSuggestionRows(root, params, signal, aiProducts);
+    }
 
-    const html =
-      await response.text();
-
-      console.log(
-  `[AI Product Search] Shopify markup response: ${
-    Math.round(performance.now() - markupStartedAt)
-  }ms`
-);
 
 
     const doc =
@@ -1118,7 +1316,7 @@ console.log(
     ) {
 
       console.warn(
-        "[AI Product Search] Could not remove native search action",
+        "[Askmerce] Could not remove native search action",
         error
       );
 
@@ -1584,9 +1782,39 @@ function showStatus(
           return;
         }
 
+        // Questions in the theme's area or the panel: put them
+        // back if the theme re-rendered and dropped them.
+        if (
+          state.mode === "questions" &&
+          state.questionKind &&
+          state.questionKind !== "native"
+        ) {
+          if (
+            !getQuestionGroup(state.questionContainer) &&
+            document.activeElement === input &&
+            questionsAllowedFor(input)
+          ) {
+            showQuestionSuggestions(input, { restore: true });
+          }
+          return;
+        }
+
         const container = getResultContainer(input);
 
         if (!container) {
+          return;
+        }
+
+        // Merchant questions open for an empty, focused input: put
+        // them back if the theme re-rendered its dropdown.
+        if (state.mode === "questions") {
+          if (
+            !getQuestionGroup(container) &&
+            document.activeElement === input &&
+            questionsAllowedFor(input)
+          ) {
+            showQuestionSuggestions(input, { restore: true });
+          }
           return;
         }
 
@@ -1859,7 +2087,10 @@ function showStatus(
     requestId,
     resultType = "direct",
     resultMessage = "",
-    shouldRender = null
+    shouldRender = null,
+    // Instant local results pass their own signal (see LOCAL
+    // CATALOG); everything else uses the input's request.
+    signal = null
   ) {
     if (!Array.isArray(products) || !products.length) {
       input.removeAttribute("aria-busy");
@@ -1868,8 +2099,13 @@ function showStatus(
 
     const currentQuery = String(input.value || "").trim();
 
+    // Instant local results are not tied to a server request;
+    // shouldRender decides whether they are still wanted.
+    const isCurrentRequest = () =>
+      requestId === LOCAL_REQUEST || requestId === state.request;
+
     if (
-      requestId !== state.request ||
+      !isCurrentRequest() ||
       currentQuery !== query
     ) {
       return;
@@ -1887,11 +2123,12 @@ function showStatus(
     const nativeMarkup = await fetchNativeMarkup(
       aiQuery,
       input,
-      state.controller?.signal
+      signal || state.controller?.signal,
+      products
     );
 
     if (
-      requestId !== state.request ||
+      !isCurrentRequest() ||
       String(input.value || "").trim() !== query ||
       (shouldRender && !shouldRender())
     ) {
@@ -1914,7 +2151,7 @@ function showStatus(
     if (!container) {
       input.removeAttribute("aria-busy");
       console.warn(
-        "[AI Product Search] Native predictive container unavailable"
+        "[Askmerce] Native predictive container unavailable"
       );
       return;
     }
@@ -1948,7 +2185,7 @@ function showStatus(
       } catch (reorderError) {
         state.expectedHandles = [];
         console.warn(
-          "[AI Product Search] Could not reorder native results; showing native order",
+          "[Askmerce] Could not reorder native results; showing native order",
           reorderError
         );
       }
@@ -1998,6 +2235,12 @@ function showStatus(
 
       state.markup = container.innerHTML;
       state.lastRenderedQuery = query;
+
+      // Search/AI results are on screen: a late instant local
+      // render for this query must not replace them.
+      if (requestId !== LOCAL_REQUEST) {
+        state.serverRenderedQuery = query;
+      }
       state.mode = "results";
       state.searchingQuery = query;
     } finally {
@@ -2010,12 +2253,299 @@ function showStatus(
     input.setAttribute("aria-expanded", "true");
     input.removeAttribute("aria-busy");
 
-    console.log(
-      "[AI Product Search] Native recommendations rendered:",
-      products.length,
-      "for:",
-      query
+
+    return true;
+  }
+
+
+  // =========================================================
+  // LOCAL CATALOG (instant results while typing)
+  // =========================================================
+  //
+  // The shop's in-stock products (title, handle, type, vendor,
+  // tags, SKUs) are loaded once when the search box is first
+  // used and kept for CFG.localCatalogTtl. Each keystroke matches
+  // the words against that list in the browser, so matching
+  // products show at once, in the theme's own dropdown, instead of
+  // after the typing pause and a server round trip.
+  //
+  // Only when every word matches (the last one may be half-typed);
+  // otherwise — vague wording, typos, natural-language questions —
+  // nothing changes: the normal instant + AI search handles it.
+  // The AI's results still replace these as before. Products the
+  // merchant's Exclude rule hides are never in the list; Boost /
+  // Demote order matches the search.
+  // =========================================================
+
+  const LOCAL_STOP_WORDS = new Set([
+    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "with",
+    "my", "me", "i", "im", "want", "need", "show", "find", "looking",
+    "some", "something", "any", "please", "buy", "get", "give", "is",
+    "are", "it", "that", "this", "which", "what", "who", "best", "good"
+  ]);
+
+  const localCatalog = runtime.localCatalog || {
+    status: "idle", // idle | loading | ready | off
+    items: [],
+    promise: null
+  };
+
+  runtime.localCatalog = localCatalog;
+
+  function localCatalogKey() {
+    return `askmerce-catalog:${window.Shopify?.shop || window.location.hostname}`;
+  }
+
+  function normalizeWords(value) {
+    return String(value || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean);
+  }
+
+  // "rings" -> "ring", "glasses" -> "glass", "dresses" -> "dress"
+  function singularWord(word) {
+    if (word.length > 4 && word.endsWith("es") && /(ss|x|ch|sh)es$/.test(word)) {
+      return word.slice(0, -2);
+    }
+
+    if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) {
+      return word.slice(0, -1);
+    }
+
+    return word;
+  }
+
+  function prepareLocalItem(item) {
+    const fieldWords = value =>
+      new Set(normalizeWords(value).flatMap(word => [word, singularWord(word)]));
+
+    return {
+      handle: String(item?.h || ""),
+      title: String(item?.t || ""),
+      rule: Number(item?.r) || 0,
+      titleNorm: normalizeWords(item?.t).join(" "),
+      titleWords: fieldWords(item?.t),
+      typeWords: fieldWords(item?.y),
+      otherWords: fieldWords([item?.v, ...(Array.isArray(item?.g) ? item.g : [])].join(" ")),
+      skus: (Array.isArray(item?.k) ? item.k : []).map(sku => String(sku).toLowerCase())
+    };
+  }
+
+  function useLocalCatalog(data) {
+    if (data?.enabled === true && Array.isArray(data.products)) {
+      localCatalog.items = data.products
+        .map(prepareLocalItem)
+        .filter(item => item.handle && item.title);
+      localCatalog.status = "ready";
+    } else {
+      localCatalog.items = [];
+      localCatalog.status = "off";
+    }
+  }
+
+  function ensureLocalCatalog() {
+    if (localCatalog.status === "ready" || localCatalog.status === "off") {
+      return Promise.resolve();
+    }
+
+    if (localCatalog.promise) {
+      return localCatalog.promise;
+    }
+
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(localCatalogKey()) || "null");
+
+      if (saved && Date.now() - saved.time < CFG.localCatalogTtl) {
+        useLocalCatalog(saved.data);
+        return Promise.resolve();
+      }
+    } catch (error) {
+      // No storage (private mode): just fetch it.
+    }
+
+    localCatalog.status = "loading";
+
+    const root = (window.Shopify?.routes?.root || "/").replace(/\/?$/, "/");
+
+    localCatalog.promise = fetch(`${root}${APP_PROXY_PATH}/catalog`, {
+      headers: { Accept: "application/json" },
+      credentials: "same-origin"
+    })
+      .then(response => (response.ok ? response.json() : { enabled: false }))
+      .catch(() => ({ enabled: false }))
+      .then(data => {
+        useLocalCatalog(data);
+
+        try {
+          window.sessionStorage.setItem(
+            localCatalogKey(),
+            JSON.stringify({ time: Date.now(), data })
+          );
+        } catch (error) {
+          // Storage full or unavailable: kept in memory only.
+        }
+      })
+      .finally(() => {
+        localCatalog.promise = null;
+      });
+
+    return localCatalog.promise;
+  }
+
+  /*
+   * Products whose words match every word of the query (the last
+   * word may be half-typed), best first. [] when anything doesn't
+   * match, so the normal search decides instead.
+   */
+  function findLocalMatches(query) {
+    if (localCatalog.status !== "ready" || !localCatalog.items.length) {
+      return [];
+    }
+
+    const raw = String(query || "").trim().toLowerCase();
+    const allWords = normalizeWords(raw);
+    const lastTyping = !/\s$/.test(String(query || ""));
+    const words = allWords.filter(
+      (word, index) =>
+        !LOCAL_STOP_WORDS.has(word) ||
+        (lastTyping && index === allWords.length - 1 && allWords.length === 1)
     );
+
+    if (!words.length) {
+      return [];
+    }
+
+    const queryNorm = allWords.join(" ");
+
+    const matchIn = (wordSet, word, isLast) => {
+      const single = singularWord(word);
+
+      if (wordSet.has(word) || wordSet.has(single)) {
+        return true;
+      }
+
+      if (isLast && lastTyping && word.length >= 2) {
+        for (const candidate of wordSet) {
+          if (candidate.startsWith(word)) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    };
+
+    const scored = [];
+
+    for (const item of localCatalog.items) {
+      // An exact SKU is the strongest possible match.
+      if (item.skus.includes(raw)) {
+        scored.push({ item, score: 1000 });
+        continue;
+      }
+
+      let score = 0;
+      let matchedAll = true;
+
+      words.forEach((word, index) => {
+        if (!matchedAll) {
+          return;
+        }
+
+        const isLast = index === words.length - 1;
+
+        if (matchIn(item.titleWords, word, isLast)) {
+          score += 3;
+        } else if (matchIn(item.typeWords, word, isLast)) {
+          score += 2;
+        } else if (matchIn(item.otherWords, word, isLast)) {
+          score += 1;
+        } else {
+          matchedAll = false;
+        }
+      });
+
+      if (!matchedAll) {
+        continue;
+      }
+
+      if (item.titleNorm.startsWith(queryNorm)) {
+        score += 3;
+      } else if (item.titleNorm.includes(queryNorm)) {
+        score += 2;
+      }
+
+      scored.push({ item, score });
+    }
+
+    // Boost first, Demote last (only among real matches, like search).
+    scored.sort((a, b) =>
+      (b.item.rule > 0) - (a.item.rule > 0) ||
+      (a.item.rule < 0) - (b.item.rule < 0) ||
+      b.score - a.score ||
+      a.item.title.length - b.item.title.length ||
+      a.item.title.localeCompare(b.item.title)
+    );
+
+    return scored
+      .slice(0, CFG.maxResults)
+      .map(({ item }) => ({ handle: item.handle, title: item.title }));
+  }
+
+  /*
+   * Shows instant local matches for `query` in the theme's own
+   * dropdown. Returns true when there were matches to show (the
+   * caller then skips the loading message). Never blocks: drawing
+   * happens in the background and is dropped if the shopper has
+   * typed on, or the search/AI results arrived first.
+   */
+  function showLocalMatches(input, query) {
+    const state = getState(input);
+    const products = findLocalMatches(query);
+
+    if (state.localLane?.controller) {
+      state.localLane.controller.abort();
+    }
+
+    state.localLane = null;
+
+    if (!products.length) {
+      return false;
+    }
+
+    const lane = { query, controller: new AbortController() };
+    state.localLane = lane;
+
+    const stillWanted = () =>
+      state.localLane === lane &&
+      String(input.value || "").trim() === query &&
+      state.serverRenderedQuery !== query;
+
+    renderAIResults(
+      input,
+      query,
+      products,
+      state,
+      LOCAL_REQUEST,
+      "direct",
+      "",
+      stillWanted,
+      lane.controller.signal
+    )
+      .then(rendered => {
+        if (rendered && stillWanted()) {
+          state.localShown = { query, products };
+
+          // The AI is still working on this search.
+          input.setAttribute("aria-busy", "true");
+        }
+      })
+      .catch(() => {
+        // Best effort: the normal search shows results anyway.
+      });
 
     return true;
   }
@@ -2048,10 +2578,6 @@ function showStatus(
       const active = inFlight.get(`${SEARCH_MODE}:${cleanQuery.toLowerCase()}`);
 
       if (cached || active) {
-        console.log(
-          "[AI Product Search] SKIP duplicate query lifecycle:",
-          cleanQuery
-        );
         return;
       }
     }
@@ -2088,12 +2614,25 @@ function showStatus(
         productsOf(response).map(product => product?.handle || product?.title || "")
       ]);
 
+    // Instant local matches already on screen for this exact query
+    // (see LOCAL CATALOG).
+    const localShownNow = () =>
+      state.localShown?.query === cleanQuery ? state.localShown : null;
+
     // 1. Instant JEV results (shown only until the AI answers).
+    //    Skipped when instant local matches are already shown (no
+    //    flicker between two instant lists).
     const instantPromise = requestAI(cleanQuery, instantLane, INSTANT_MODE)
       .then(async ({ result: instant }) => {
         const instantProducts = productsOf(instant);
 
-        if (!instant || aiFinished || !stillCurrent() || !instantProducts.length) {
+        if (
+          !instant ||
+          aiFinished ||
+          !stillCurrent() ||
+          !instantProducts.length ||
+          localShownNow()
+        ) {
           return;
         }
 
@@ -2110,6 +2649,7 @@ function showStatus(
 
         if (rendered) {
           instantShown = instant;
+          state.serverRenderedQuery = cleanQuery;
 
           // The AI is still working on this search.
           input.setAttribute("aria-busy", "true");
@@ -2150,10 +2690,13 @@ function showStatus(
 
     const products = productsOf(result);
 
+    // Instant local matches count as instant results too.
+    const localShown = instantShown ? null : localShownNow();
+
     if (!products.length) {
       // Keep instant results rather than replacing them with
       // nothing.
-      if (instantShown) {
+      if (instantShown || localShown) {
         input.removeAttribute("aria-busy");
         return;
       }
@@ -2179,7 +2722,20 @@ function showStatus(
       return;
     }
 
-    await renderAIResults(
+    // Same for instant local matches: keep them when the AI picked
+    // exactly the same products (and has no "didn't find" message).
+    if (
+      localShown &&
+      result.resultType !== "alternative" &&
+      JSON.stringify(products.map(product => product?.handle || "")) ===
+        JSON.stringify(localShown.products.map(product => product.handle))
+    ) {
+      state.serverRenderedQuery = cleanQuery;
+      input.removeAttribute("aria-busy");
+      return;
+    }
+
+    const aiRendered = await renderAIResults(
       input,
       cleanQuery,
       products,
@@ -2188,6 +2744,10 @@ function showStatus(
       result.resultType,
       result.message
     );
+
+    if (aiRendered) {
+      state.serverRenderedQuery = cleanQuery;
+    }
 
     // Not awaited earlier; make sure it has settled.
     await instantPromise;
@@ -2215,6 +2775,10 @@ function showStatus(
     state.query = cleanQuery;
 
     if (!cleanQuery) {
+      if (state.localLane?.controller) {
+        state.localLane.controller.abort();
+      }
+      state.localLane = null;
       state.mode = "idle";
       state.aiQuery = "";
       state.searchingQuery = "";
@@ -2223,9 +2787,26 @@ function showStatus(
       return;
     }
 
-    // Suppress native suggestions immediately. The result area shows only
-    // the AI loading message until AI returns.
-    showStatus(input, "Looking for best result...", "loading");
+    // Instant local matches, when every word matches a product
+    // (see LOCAL CATALOG). Otherwise, as before: suppress native
+    // suggestions and show the loading message until results come.
+    if (!showLocalMatches(input, cleanQuery)) {
+      showStatus(input, "Looking for best result...", "loading");
+
+      // The product list is still loading (first keystroke): show its
+      // matches as soon as it arrives, unless results came first.
+      if (localCatalog.status === "loading" && localCatalog.promise) {
+        localCatalog.promise.then(() => {
+          if (
+            String(input.value || "").trim() === cleanQuery &&
+            state.serverRenderedQuery !== cleanQuery &&
+            !state.localLane
+          ) {
+            showLocalMatches(input, cleanQuery);
+          }
+        });
+      }
+    }
 
     state.timer = setTimeout(() => {
       state.timer = null;
@@ -2236,10 +2817,23 @@ function showStatus(
         if (String(input.value || "").trim() === cleanQuery) {
           state.mode = "idle";
           input.removeAttribute("aria-busy");
+
+          // Don't leave "Looking for best result..." on screen
+          // forever; results already shown stay.
+          const container = getResultContainer(input);
+
+          if (
+            container &&
+            container.querySelector("[data-ai-search-status]") &&
+            !container.querySelector("a[href*='/products/']")
+          ) {
+            state.statusText = "";
+            clearResultArea(input);
+          }
         }
 
         console.error(
-          "[AI Product Search] Predictive search error:",
+          "[Askmerce] Predictive search error:",
           error
         );
       });
@@ -2387,6 +2981,12 @@ function showStatus(
       );
 
 
+    replaceVisibleQueryText(
+      originalQuery,
+      aiQuery
+    );
+
+
     try {
 
       const url =
@@ -2407,6 +3007,54 @@ function showStatus(
       );
 
     } catch (_) {}
+  }
+
+
+  /*
+   * Many themes print the search terms on the results page
+   * (e.g. `4 results for "..."`) and in the page title. Shopify
+   * filled them with the internal AI query (title:"..." OR ...),
+   * so show the shopper's wording there too. Only text nodes
+   * that contain the exact internal query are touched.
+   */
+  function replaceVisibleQueryText(
+    originalQuery,
+    aiQuery
+  ) {
+    try {
+      if (document.title.includes(aiQuery)) {
+        document.title = document.title.split(aiQuery).join(originalQuery);
+      }
+
+      if (!document.body) {
+        return;
+      }
+
+      const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode: node =>
+            node.nodeValue &&
+            node.nodeValue.includes(aiQuery) &&
+            !node.parentElement?.closest("script, style, noscript, textarea")
+              ? NodeFilter.FILTER_ACCEPT
+              : NodeFilter.FILTER_REJECT
+        }
+      );
+
+      const nodes = [];
+
+      while (walker.nextNode()) {
+        nodes.push(walker.currentNode);
+      }
+
+      nodes.forEach(node => {
+        node.nodeValue = node.nodeValue.split(aiQuery).join(originalQuery);
+      });
+    } catch (_) {
+      // Cosmetic only; never break the results page.
+    }
   }
 
 
@@ -2457,12 +3105,1174 @@ function showStatus(
       },
       500
     );
+
+
+    // Themes that render parts of the results page later (e.g.
+    // a heading drawn by script) get one more pass.
+    setTimeout(
+      () => {
+
+        replaceVisibleQueryText(
+          pending.originalQuery,
+          pending.aiQuery
+        );
+
+      },
+      1500
+    );
+  }
+
+
+  // =========================================================
+  // SEARCH QUESTIONS (merchant suggestions)
+  // =========================================================
+  //
+  // The merchant's 5–7 questions (admin "Search Questions"
+  // page) arrive in the app embed's data-search-questions
+  // attribute. They are shown inside the theme's OWN
+  // predictive-search dropdown — found with the same
+  // getResultContainer() used for AI results, styled with the
+  // same learned theme row style as the status messages — when
+  // a search input is focused and empty.
+  //
+  // Selecting a question goes straight to the full search
+  // results page with the AI's products (selectQuestion), using
+  // the same steps as the existing submit flow, which itself is
+  // unchanged.
+  //
+  // When the attribute is absent (feature off, fewer than 5
+  // questions, or an older embed) none of this runs.
+  // =========================================================
+
+  const QUESTIONS_MIN = 5;
+  const QUESTIONS_MAX = 7;
+  const QUESTION_MAX_LENGTH = 120;
+  const QUESTION_HIGHLIGHT = "rgba(127, 127, 127, 0.12)";
+  // How many times a theme may wipe the open questions before
+  // we stop putting them back (avoids fighting a theme).
+  const QUESTION_MAX_RESTORES = 5;
+
+  let searchQuestionsConfig = null;
+  let questionListSequence = 0;
+
+  function readSearchQuestions() {
+    try {
+      const root = document.querySelector(
+        "[data-ai-product-search][data-search-questions]"
+      );
+
+      if (!root) {
+        return null;
+      }
+
+      const data = JSON.parse(root.getAttribute("data-search-questions") || "null");
+
+      if (!data || data.enabled !== true || !Array.isArray(data.questions)) {
+        return null;
+      }
+
+      const seen = new Set();
+      const questions = data.questions
+        .map(question => String(question == null ? "" : question).replace(/\s+/g, " ").trim())
+        .filter(question => {
+          const key = question.toLowerCase();
+
+          if (!question || question.length > QUESTION_MAX_LENGTH || seen.has(key)) {
+            return false;
+          }
+
+          seen.add(key);
+          return true;
+        })
+        .slice(0, QUESTIONS_MAX);
+
+      if (questions.length < QUESTIONS_MIN) {
+        return null;
+      }
+
+      return {
+        heading: String(data.heading || "").replace(/\s+/g, " ").trim().slice(0, 60),
+        questions
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getSearchQuestions() {
+    if (!searchQuestionsConfig) {
+      searchQuestionsConfig = readSearchQuestions();
+    }
+
+    return searchQuestionsConfig;
+  }
+
+  /*
+   * On the search results page the theme pre-fills its search
+   * inputs with the current query. Until the shopper edits it,
+   * such an input counts as empty for the questions, so opening
+   * search there shows the questions too.
+   */
+  function currentResultsQuery() {
+    try {
+      if (!/(^|\/)search\/?$/i.test(window.location.pathname)) {
+        return "";
+      }
+
+      return String(new URLSearchParams(window.location.search).get("q") || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function inputValue(input) {
+    return String(input.value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function questionsAllowedFor(input) {
+    const value = inputValue(input);
+    return !value || value === currentResultsQuery();
+  }
+
+  function getQuestionGroup(container) {
+    return container
+      ? container.querySelector("[data-ai-search-questions]")
+      : null;
+  }
+
+  /*
+   * WHERE THE QUESTIONS ARE SHOWN, in this order:
+   *
+   *  1. "native": the predictive dropdown this script already
+   *     knows (getResultContainer — Dawn family). Unchanged.
+   *  2. "theme":  the theme's own search-results area, found by
+   *     what most themes have in common (aria-controls of the
+   *     search box, or an element near it named like
+   *     predictive / results / suggestions). Nothing is
+   *     theme-specific. It is then checked to really be visible;
+   *     if the theme keeps it hidden, (3) is used instead.
+   *  3. "panel":  a dropdown attached directly under the theme's
+   *     own search box, styled from that box (font, colours,
+   *     border, corners). It is not a search bar; the theme's
+   *     box stays the only one.
+   *
+   * Only the questions use (2) and (3). AI results for typed
+   * searches keep using getResultContainer() exactly as before.
+   */
+  const QUESTION_AREA_SELECTOR = [
+    "[id*='predictive' i]",
+    "[class*='predictive' i]",
+    "[id*='result' i]",
+    "[class*='result' i]",
+    "[id*='suggest' i]",
+    "[class*='suggest' i]",
+    "[id*='autocomplete' i]",
+    "[class*='autocomplete' i]",
+    "[role='listbox']"
+  ].join(",");
+
+  // Name parts that mean "a piece of the search UI", not the
+  // area results are listed in.
+  const QUESTION_AREA_EXCLUDED_WORDS = new Set([
+    "count", "title", "heading", "header", "close", "icon", "btn",
+    "button", "toggle", "label", "input", "field", "form", "spinner",
+    "loader", "loading", "overlay", "backdrop", "trigger", "submit",
+    "reset", "clear", "item", "card", "empty", "error", "message"
+  ]);
+
+  // Stop looking at these (the search's own boundaries).
+  const QUESTION_SCOPE_BOUNDARY =
+    "header, [role='banner'], dialog, [role='dialog'], [aria-modal='true']";
+
+  function nameWords(element) {
+    return String(
+      `${element.id || ""} ${element.getAttribute("class") || ""}`
+    )
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+  }
+
+  function isQuestionAreaCandidate(element, input) {
+    if (
+      !element ||
+      element.contains(input) ||
+      element.closest("[data-ai-search-panel]")
+    ) {
+      return false;
+    }
+
+    const tag = element.tagName.toLowerCase();
+
+    if (
+      !tag.includes("-") &&
+      !["div", "ul", "ol", "section", "aside", "nav"].includes(tag)
+    ) {
+      return false;
+    }
+
+    // The search page's own product grid is not a dropdown.
+    if (
+      element.closest("main") &&
+      element.querySelector("a[href*='/products/']")
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function questionAreaScore(element) {
+    const words = nameWords(element);
+
+    if (words.some(word => QUESTION_AREA_EXCLUDED_WORDS.has(word))) {
+      return 0;
+    }
+
+    let score = 0;
+
+    if (words.some(word => word.startsWith("predictive"))) score += 3;
+    if (words.some(word => word.includes("result"))) score += 2;
+    if (words.some(word => word.includes("suggest"))) score += 2;
+    if (words.some(word => word.includes("autocomplete"))) score += 2;
+    if (words.some(word => word.includes("search"))) score += 1;
+    if (element.getAttribute("role") === "listbox") score += 2;
+
+    return score;
+  }
+
+  function findThemeQuestionArea(input) {
+    try {
+      // a) The element the search box says it controls.
+      const owners = [input, input.closest("[role='combobox']")].filter(Boolean);
+
+      for (const owner of owners) {
+        const ids = `${owner.getAttribute("aria-controls") || ""} ${owner.getAttribute("aria-owns") || ""}`
+          .split(/\s+/)
+          .filter(Boolean);
+
+        for (const id of ids) {
+          const element = document.getElementById(id);
+
+          if (isQuestionAreaCandidate(element, input)) {
+            return element;
+          }
+        }
+      }
+
+      // b) The closest well-named area around the search box.
+      for (
+        let scope = input.parentElement, level = 0;
+        scope && level < 8;
+        scope = scope.parentElement, level++
+      ) {
+        if (
+          scope === document.body ||
+          scope === document.documentElement ||
+          scope.matches("main") ||
+          scope.querySelector("main")
+        ) {
+          break;
+        }
+
+        let best = null;
+        let bestScore = 1;
+
+        scope.querySelectorAll(QUESTION_AREA_SELECTOR).forEach(element => {
+          if (!isQuestionAreaCandidate(element, input)) {
+            return;
+          }
+
+          const score = questionAreaScore(element);
+
+          // Document order: on a tie the outer area wins.
+          if (score > bestScore) {
+            best = element;
+            bestScore = score;
+          }
+        });
+
+        if (best) {
+          return best;
+        }
+
+        if (scope.matches(QUESTION_SCOPE_BOUNDARY)) {
+          break;
+        }
+      }
+    } catch (error) {
+      // Detection is best-effort; the panel is the fallback.
+    }
+
+    return null;
+  }
+
+  function isShownOnScreen(element) {
+    if (!element || !element.isConnected) {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+
+    if (rect.width < 1 || rect.height < 1) {
+      return false;
+    }
+
+    if (typeof element.checkVisibility === "function") {
+      return element.checkVisibility({
+        opacityProperty: true,
+        visibilityProperty: true
+      });
+    }
+
+    return window.getComputedStyle(element).visibility !== "hidden";
+  }
+
+  /*
+   * The theme's search box: the input plus its wrapper (icon,
+   * submit button, border), i.e. the largest ancestor that is
+   * still about as tall as the input.
+   */
+  function findSearchBox(input) {
+    const height = input.getBoundingClientRect().height;
+    let box = input;
+
+    if (!height) {
+      return box;
+    }
+
+    for (
+      let element = input.parentElement;
+      element && element !== document.body;
+      element = element.parentElement
+    ) {
+      if (
+        element.matches(QUESTION_SCOPE_BOUNDARY) ||
+        element.getBoundingClientRect().height > Math.max(height * 1.8, height + 24)
+      ) {
+        break;
+      }
+
+      box = element;
+    }
+
+    return box;
+  }
+
+  // First background that is not see-through, from the search
+  // box outwards (the box, then the drawer/header behind it).
+  function surfaceColor(element) {
+    for (let node = element; node && node.nodeType === 1; node = node.parentElement) {
+      const color = window.getComputedStyle(node).backgroundColor || "";
+      const match = color.match(/rgba?\(([^)]+)\)/i);
+
+      if (!match) {
+        continue;
+      }
+
+      const parts = match[1].split(/[\s,/]+/).filter(Boolean);
+      const alpha = parts.length > 3 ? parseFloat(parts[3]) : 1;
+
+      if (alpha >= 0.9) {
+        return color;
+      }
+    }
+
+    return "#ffffff";
+  }
+
+  function styleQuestionPanel(input, panel, box) {
+    const inputStyle = window.getComputedStyle(input);
+    const borderWidth = parseFloat(inputStyle.borderTopWidth || "0");
+    const radius = Math.min(
+      parseFloat(inputStyle.borderTopLeftRadius || inputStyle.borderRadius || "0") || 0,
+      12
+    );
+
+    panel.style.position = "absolute";
+    panel.style.zIndex = "2147483000";
+    panel.style.boxSizing = "border-box";
+    panel.style.minWidth = "220px";
+    panel.style.margin = "4px 0 0";
+    panel.style.padding = "6px 0";
+    panel.style.maxHeight = "60vh";
+    panel.style.overflowY = "auto";
+    panel.style.textAlign = "left";
+    panel.style.textTransform = "none";
+    panel.style.letterSpacing = "normal";
+    panel.style.fontFamily = inputStyle.fontFamily;
+    panel.style.fontSize = inputStyle.fontSize;
+    panel.style.color = inputStyle.color;
+    panel.style.backgroundColor = surfaceColor(input);
+    panel.style.border =
+      borderWidth > 0
+        ? `${inputStyle.borderTopWidth} solid ${inputStyle.borderTopColor}`
+        : "1px solid rgba(127, 127, 127, 0.25)";
+    panel.style.borderRadius = `${radius}px`;
+    panel.style.boxShadow = "0 10px 30px rgba(0, 0, 0, 0.12)";
+  }
+
+  // Puts the panel right under the search box, inside the same
+  // part of the page (so it shows inside the theme's drawer or
+  // modal too).
+  function positionQuestionPanel(input) {
+    const state = getState(input);
+    const panel = state.questionPanel;
+
+    if (!panel || !panel.isConnected) {
+      return;
+    }
+
+    if (!state.questionBoxMeasured && input.getBoundingClientRect().height) {
+      // The box could not be measured while the drawer was still
+      // closed; measure it now that it is visible.
+      state.questionBoxMeasured = true;
+      const box = findSearchBox(input);
+
+      if (box !== state.questionBox) {
+        state.internalMutation = true;
+        state.questionBox = box;
+        box.after(panel);
+        queueMicrotask(() => { state.internalMutation = false; });
+      }
+    }
+
+    const box = state.questionBox;
+    const boxRect = box ? box.getBoundingClientRect() : null;
+
+    if (!boxRect || !boxRect.width) {
+      return;
+    }
+
+    const parent = panel.offsetParent;
+    const parentRect = parent
+      ? parent.getBoundingClientRect()
+      : { top: 0, left: 0 };
+    const offsetTop = parent ? parent.scrollTop - parent.clientTop : window.scrollY;
+    const offsetLeft = parent ? parent.scrollLeft - parent.clientLeft : window.scrollX;
+
+    panel.style.top = `${Math.round(boxRect.bottom - parentRect.top + offsetTop)}px`;
+    panel.style.left = `${Math.round(boxRect.left - parentRect.left + offsetLeft)}px`;
+    panel.style.width = `${Math.round(boxRect.width)}px`;
+  }
+
+  let questionPanelResizeListener = false;
+
+  function ensureQuestionPanel(input) {
+    const state = getState(input);
+
+    if (!state.questionPanel) {
+      const panel = document.createElement("div");
+      panel.setAttribute("data-ai-search-panel", "true");
+      state.questionPanel = panel;
+    }
+
+    const panel = state.questionPanel;
+    const box = findSearchBox(input);
+
+    state.questionBox = box;
+    state.questionBoxMeasured = Boolean(input.getBoundingClientRect().height);
+
+    if (!panel.isConnected || panel.previousElementSibling !== box) {
+      box.after(panel);
+    }
+
+    styleQuestionPanel(input, panel, box);
+
+    if (!questionPanelResizeListener) {
+      questionPanelResizeListener = true;
+
+      window.addEventListener("resize", () => {
+        trackedInputs.forEach(tracked => {
+          const trackedState = states.get(tracked);
+
+          if (trackedState && trackedState.questionKind === "panel") {
+            positionQuestionPanel(tracked);
+          }
+        });
+      });
+    }
+
+    return panel;
+  }
+
+  function resolveQuestionPlacement(input) {
+    const state = getState(input);
+
+    // Skipped only when the questions were found invisible in it
+    // (e.g. it matched a hidden menu inside the search form).
+    if (!state.nativeQuestionRejected && getResultContainer(input)) {
+      return { kind: "native", container: null };
+    }
+
+    if (!state.questionAreaRejected) {
+      const area = findThemeQuestionArea(input);
+
+      if (area) {
+        return { kind: "theme", container: area };
+      }
+    }
+
+    return { kind: "panel", container: null };
+  }
+
+  // The element the questions are in right now (any placement).
+  function questionContainerFor(input) {
+    const state = getState(input);
+
+    return state.questionKind && state.questionKind !== "native"
+      ? state.questionContainer
+      : getResultContainer(input);
+  }
+
+  function removeQuestionPlacement(input) {
+    const state = getState(input);
+
+    if (state.questionKind === "panel" && state.questionPanel) {
+      state.questionPanel.remove();
+    } else if (state.questionKind === "theme" || state.questionKind === "native") {
+      const group = getQuestionGroup(
+        state.questionKind === "native"
+          ? getResultContainer(input)
+          : state.questionContainer
+      );
+
+      if (group) {
+        group.remove();
+      }
+    }
+
+    if (state.questionPendingElement) {
+      state.questionPendingElement.remove();
+      state.questionPendingElement = null;
+    }
+  }
+
+  /*
+   * After showing in the theme's area: once the search box is on
+   * screen (drawers animate in), check the questions are really
+   * visible. Themes that keep that area hidden until results
+   * arrive get the panel instead. The panel is re-aligned while
+   * the drawer settles.
+   */
+  function verifyQuestionPlacement(input, attempt) {
+    const state = getState(input);
+    const kind = state.questionKind;
+
+    setTimeout(() => {
+      if (state.mode !== "questions" || state.questionKind !== kind) {
+        return;
+      }
+
+      if (kind === "panel") {
+        positionQuestionPanel(input);
+      }
+
+      if (!isShownOnScreen(input)) {
+        if (attempt < 10) {
+          verifyQuestionPlacement(input, attempt + 1);
+        }
+
+        return;
+      }
+
+      if (kind === "theme" || kind === "native") {
+        const container =
+          kind === "native" ? getResultContainer(input) : state.questionContainer;
+        const group = getQuestionGroup(container);
+
+        if (!isShownOnScreen(group) || !isShownOnScreen(container)) {
+          if (kind === "native") {
+            state.nativeQuestionRejected = true;
+          } else {
+            state.questionAreaRejected = true;
+          }
+
+          showQuestionSuggestions(input, {});
+        }
+
+        return;
+      }
+
+      if (attempt < 3) {
+        verifyQuestionPlacement(input, attempt + 1);
+      }
+    }, attempt === 0 ? 60 : 150);
+  }
+
+  // "Searching with AI..." where the questions were, for the
+  // theme-area and panel placements (the native dropdown uses
+  // showStatus() as before).
+  function showQuestionPending(input, placement, text) {
+    const state = getState(input);
+    const config = { heading: "", questions: [] };
+    let container = placement.container;
+
+    if (placement.kind === "panel") {
+      container = ensureQuestionPanel(input);
+
+      // The panel is this script's own element and is reused: a
+      // cancelled earlier message (shopper kept typing, then pressed
+      // Enter again) must not stay in it next to the new one.
+      container?.replaceChildren();
+    }
+
+    if (!container) {
+      return;
+    }
+
+    const group = buildQuestionGroup(input, container, config, "plain");
+    const row = document.createElement("div");
+    const label = document.createElement("span");
+
+    label.textContent = text;
+    styleQuestionRow(row, label, false, "plain", input);
+    row.setAttribute("data-ai-search-status", "true");
+    row.setAttribute("role", "status");
+    row.appendChild(label);
+    group.insertBefore(row, group.firstChild);
+
+    state.internalMutation = true;
+
+    try {
+      container.insertBefore(group, container.firstChild);
+    } finally {
+      queueMicrotask(() => { state.internalMutation = false; });
+    }
+
+    state.questionPendingElement =
+      placement.kind === "panel" ? container : group;
+
+    if (placement.kind === "panel") {
+      positionQuestionPanel(input);
+    }
+  }
+
+  function getQuestionOptions(input) {
+    const group = getQuestionGroup(questionContainerFor(input));
+
+    return group
+      ? Array.from(group.querySelectorAll("[data-ai-search-question]"))
+      : [];
+  }
+
+  function setActiveQuestion(input, index) {
+    const state = getState(input);
+    const options = getQuestionOptions(input);
+
+    state.activeQuestion =
+      options.length && index >= 0 ? index % options.length : -1;
+
+    options.forEach((option, i) => {
+      const active = i === state.activeQuestion;
+      option.setAttribute("aria-selected", active ? "true" : "false");
+      option.style.backgroundColor = active ? QUESTION_HIGHLIGHT : "";
+    });
+
+    if (state.activeQuestion >= 0) {
+      input.setAttribute("aria-activedescendant", options[state.activeQuestion].id);
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  /*
+   * Theme-native look, same approach as createStatusElement():
+   * the classes/padding learned from this theme's own product
+   * rows, or Dawn-family classes before anything is learned.
+   */
+  function styleQuestionRow(row, textElement, isHeading, look, input) {
+    if (look === "plain") {
+      // Theme area / panel: the theme's own font and colours are
+      // inherited; rows line up with the text in the search box.
+      const inputStyle = window.getComputedStyle(input);
+      const padX = Math.round(
+        Math.max(12, parseFloat(inputStyle.paddingLeft || "0") || 0) +
+        (parseFloat(inputStyle.borderLeftWidth || "0") || 0)
+      );
+
+      row.style.display = "block";
+      row.style.padding = isHeading ? `0.5em ${padX}px 0.25em` : `0.55em ${padX}px`;
+      row.style.lineHeight = "1.4";
+      textElement.style.margin = "0";
+      textElement.style.color = "inherit";
+
+      if (isHeading) {
+        textElement.style.fontSize = "0.8em";
+        textElement.style.opacity = "0.7";
+      }
+
+      return;
+    }
+
+    const learned = themeStatusStyle;
+
+    if (learned) {
+      textElement.className = learned.textClass || "";
+      row.style.paddingTop = learned.paddingTop;
+      row.style.paddingBottom = learned.paddingBottom;
+      row.style.paddingLeft = learned.paddingLeft;
+      row.style.paddingRight = learned.paddingRight;
+    } else if (isHeading) {
+      textElement.className =
+        "predictive-search__heading text-body caption-with-letter-spacing";
+    } else {
+      row.className = "predictive-search__list-item predictive-search__item";
+      textElement.className = "predictive-search__item-heading h5";
+    }
+
+    if (isHeading) {
+      textElement.style.opacity = "0.75";
+
+      if (learned) {
+        textElement.style.fontSize = "0.85em";
+      }
+    }
+
+    textElement.style.margin = "0";
+
+    if (!learned) {
+      queueMicrotask(() => {
+        try {
+          if (
+            row.isConnected &&
+            parseFloat(window.getComputedStyle(row).paddingLeft || "0") === 0
+          ) {
+            row.style.padding = isHeading ? "1rem 2rem 0.5rem" : "1rem 2rem";
+          }
+        } catch (error) {
+          // best-effort only
+        }
+      });
+    }
+  }
+
+  function buildQuestionGroup(input, container, config, look) {
+    const learned = look === "plain" ? null : themeStatusStyle;
+    const textTag =
+      learned && /^(p|span|div|h[1-6])$/.test(learned.textTag)
+        ? learned.textTag
+        : "span";
+
+    const listId = `ai-search-questions-${++questionListSequence}`;
+    const group = document.createElement(container.matches("ul, ol") ? "li" : "div");
+    group.setAttribute("data-ai-search-questions", "true");
+    group.style.listStyle = "none";
+
+    const list = document.createElement("ul");
+    list.id = listId;
+    list.setAttribute("role", "listbox");
+    list.style.listStyle = "none";
+    list.style.margin = "0";
+    list.style.padding = "0";
+
+    if (config.heading) {
+      const headingRow = document.createElement("div");
+      const headingText = document.createElement(textTag === "span" ? "span" : "p");
+      headingText.id = `${listId}-label`;
+      headingText.textContent = config.heading;
+      styleQuestionRow(headingRow, headingText, true, look, input);
+      headingRow.appendChild(headingText);
+      group.appendChild(headingRow);
+      list.setAttribute("aria-labelledby", headingText.id);
+    }
+
+    config.questions.forEach((question, index) => {
+      const option = document.createElement("li");
+      const text = document.createElement(textTag);
+
+      option.id = `${listId}-${index}`;
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", "false");
+      option.setAttribute("data-ai-search-question", question);
+      option.style.listStyle = "none";
+      option.style.cursor = "pointer";
+
+      text.textContent = question;
+      styleQuestionRow(option, text, false, look, input);
+      option.appendChild(text);
+
+      // Keep focus in the input so themes that close their
+      // dropdown on blur don't close it before the click lands.
+      option.addEventListener("pointerdown", event => event.preventDefault());
+      option.addEventListener("mousedown", event => event.preventDefault());
+      option.addEventListener("pointerenter", () => setActiveQuestion(input, index));
+      option.addEventListener("click", event => {
+        event.preventDefault();
+        // The list is replaced by "Searching with AI..." during
+        // this click, so to the theme's document-level "click
+        // outside closes search" handlers the target would look
+        // like it is outside the search. The click is ours; it
+        // stops here.
+        event.stopPropagation();
+        selectQuestion(input, question);
+      });
+
+      list.appendChild(option);
+    });
+
+    group.appendChild(list);
+    return group;
+  }
+
+  function showQuestionSuggestions(input, options) {
+    const config = getSearchQuestions();
+
+    if (!config || !input || !questionsAllowedFor(input)) {
+      return false;
+    }
+
+    const state = getState(input);
+    const restoring = Boolean(options && options.restore);
+
+    if (restoring) {
+      state.questionRestores = (state.questionRestores || 0) + 1;
+
+      if (state.questionRestores > QUESTION_MAX_RESTORES) {
+        state.mode = "idle";
+        return false;
+      }
+    } else {
+      state.questionRestores = 0;
+    }
+
+    const placement = resolveQuestionPlacement(input);
+    const native = placement.kind === "native";
+
+    state.internalMutation = true;
+
+    try {
+      // Moving to a different placement (e.g. theme area found
+      // hidden -> panel): take the questions out of the old one.
+      if (
+        state.questionKind &&
+        (state.questionKind !== placement.kind ||
+          (!native && state.questionContainer !== placement.container && placement.kind === "theme"))
+      ) {
+        removeQuestionPlacement(input);
+      }
+
+      const container = native
+        ? openNativeShell(input)
+        : placement.kind === "theme"
+          ? placement.container
+          : ensureQuestionPanel(input);
+
+      if (!container) {
+        return false;
+      }
+
+      if (native && ((options && options.replace) || inputValue(input))) {
+        // Clear our own earlier results/status from this input,
+        // or native rows for a pre-filled results-page input.
+        container.replaceChildren();
+      } else {
+        // Keep any content the theme shows itself (popular
+        // products etc.); questions go above it. The theme's own
+        // area is never cleared.
+        const existing = getQuestionGroup(container);
+
+        if (existing) {
+          existing.remove();
+        }
+      }
+
+      container.insertBefore(
+        buildQuestionGroup(input, container, config, native ? "native" : "plain"),
+        container.firstChild
+      );
+
+      state.questionKind = placement.kind;
+      state.questionContainer = container;
+    } finally {
+      queueMicrotask(() => {
+        state.internalMutation = false;
+      });
+    }
+
+    state.mode = "questions";
+    state.activeQuestion = -1;
+    state.statusText = "";
+    state.searchingQuery = "";
+    input.removeAttribute("aria-busy");
+    input.removeAttribute("aria-activedescendant");
+    input.setAttribute("aria-expanded", "true");
+
+    if (placement.kind === "panel") {
+      positionQuestionPanel(input);
+    }
+
+    // Every placement is checked to be really visible (see
+    // verifyQuestionPlacement); hidden ones fall through to the
+    // next placement.
+    verifyQuestionPlacement(input, 0);
+
+    return true;
+  }
+
+  function hideQuestionSuggestions(input, options) {
+    const state = getState(input);
+    const kind = state.questionKind || "native";
+    const container = questionContainerFor(input);
+    const group = getQuestionGroup(container);
+
+    state.internalMutation = true;
+
+    try {
+      if (group) {
+        group.remove();
+      }
+
+      if (kind === "panel" && state.questionPanel) {
+        state.questionPanel.remove();
+      }
+    } finally {
+      queueMicrotask(() => {
+        state.internalMutation = false;
+      });
+    }
+
+    state.questionKind = null;
+    state.questionContainer = null;
+
+    if (state.mode === "questions") {
+      state.mode = "idle";
+    }
+
+    state.activeQuestion = -1;
+    input.removeAttribute("aria-activedescendant");
+
+    if (
+      options &&
+      options.close &&
+      kind === "native" &&
+      container &&
+      !String(container.textContent || "").trim()
+    ) {
+      closeNativeShell(input);
+    }
+  }
+
+  /*
+   * Search results page URL, built the same way as the submit
+   * flow below: the form's action, its other fields kept (e.g.
+   * options[prefix], type), and `q` set to the given query.
+   */
+  function searchResultsUrl(form, query) {
+    const action =
+      (form && form.getAttribute("action")) ||
+      window.Shopify?.routes?.search_url ||
+      "/search";
+
+    const target = new URL(action, window.location.origin);
+
+    if (form) {
+      for (const [key, value] of new FormData(form).entries()) {
+        if (key !== "q" && typeof value === "string") {
+          target.searchParams.append(key, value);
+        }
+      }
+    }
+
+    target.searchParams.set("q", query);
+    return target.toString();
+  }
+
+  /*
+   * A selected question goes straight to the full search
+   * results page with the AI's products — the same steps the
+   * submit flow (FORM SUBMIT / ENTER) takes for a typed query:
+   * requestAI() in final mode -> buildAIQuery() -> savePendingSearch()
+   * so the results page shows the question as the search text
+   * (restoreFullSearchPage) -> navigate. No products are shown
+   * in the dropdown; it only says "Searching with AI..." while
+   * the AI answers.
+   *
+   * If the AI returns nothing (or fails), the results page is
+   * still opened, with the question itself as the query.
+   */
+  async function selectQuestion(input, question) {
+    const state = getState(input);
+
+    // A newer selection replaces an unfinished one.
+    if (state.questionLane) {
+      state.questionLane.cancelled = true;
+    }
+
+    /*
+     * The question search gets its own request slot (like the
+     * instant JEV lane), not the input's. Themes react to the
+     * click in their own ways — closing the search, clearing the
+     * box, firing input events that end in cancelState() — and
+     * the first, uncached AI answer takes a few seconds, so with
+     * the input's slot such reactions silently dropped the
+     * search (it only "worked" on a second, cached try). Only
+     * the shopper cancels it: Escape, or typing a different
+     * search.
+     */
+    const lane = { request: 0, controller: null, query: question, cancelled: false };
+    state.questionLane = lane;
+
+    const cancel = () => {
+      lane.cancelled = true;
+
+      if (lane.controller) {
+        lane.controller.abort();
+      }
+
+      if (state.questionPendingElement) {
+        state.questionPendingElement.remove();
+        state.questionPendingElement = null;
+      }
+    };
+
+    const onKeydown = event => {
+      if (event.key === "Escape") {
+        cancel();
+      }
+    };
+
+    const onInput = event => {
+      const value = event.target === input ? inputValue(input) : "";
+
+      // An emptied box is usually the theme resetting its search
+      // UI; a different non-empty value is the shopper typing.
+      if (value && value !== question) {
+        cancel();
+      }
+    };
+
+    document.addEventListener("keydown", onKeydown, true);
+    document.addEventListener("input", onInput, true);
+
+    const placement = {
+      kind: state.questionKind || "native",
+      container: state.questionContainer
+    };
+
+    hideQuestionSuggestions(input);
+    cancelState(state);
+
+    input.value = question;
+    state.query = question;
+    state.lastStartedQuery = "";
+
+    if (placement.kind === "native") {
+      showStatus(input, "Just a moment…", "loading");
+    } else {
+      showQuestionPending(input, placement, "Just a moment…");
+    }
+
+    let aiQuery = "";
+
+    try {
+      const { result } = await requestAI(question, lane, SEARCH_MODE);
+      const products = Array.isArray(result?.products) ? result.products : [];
+
+      if (products.length) {
+        aiQuery = buildAIQuery(products, question);
+      }
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        console.error("[Askmerce] Question search error:", error);
+      }
+    } finally {
+      document.removeEventListener("keydown", onKeydown, true);
+      document.removeEventListener("input", onInput, true);
+    }
+
+    if (lane.cancelled || state.questionLane !== lane) {
+      return;
+    }
+
+    state.questionLane = null;
+
+    if (aiQuery && aiQuery !== question) {
+      savePendingSearch(question, aiQuery);
+    }
+
+    window.location.assign(searchResultsUrl(input.form, aiQuery || question));
   }
 
 
   // =========================================================
   // INPUT EVENT INTERCEPTION
   // =========================================================
+
+  // =========================================================
+  // THEME CLEAR BUTTON
+  // =========================================================
+  //
+  // While the shopper types, this script handles the input event
+  // so the theme doesn't run its own product search. In themes
+  // like Horizon (and Dawn) that same handler is what shows the
+  // theme's own "Clear"/reset button, so it stayed hidden. Here we
+  // do only that part, exactly the way the theme does it:
+  //   - Horizon: resetButton.hidden = false
+  //   - Dawn-style: remove the "hidden" class
+  // No styles or elements are added, and the browser's own clear
+  // control is left as it is. Hiding it again (empty box, Escape,
+  // clicking Clear) stays with the theme's own handlers, which
+  // still run for those.
+  // =========================================================
+
+  const THEME_CLEAR_SELECTOR = [
+    '[ref="resetButton"]',
+    'button[type="reset"]',
+    ".reset__button",
+    ".search__reset",
+    ".predictive-search__reset",
+    'button[aria-label*="clear" i]',
+    'button[aria-label*="reset" i]'
+  ].join(",");
+
+  function findThemeClearButton(input) {
+    const scope =
+      input.closest(
+        "predictive-search-component, predictive-search, search-form, " +
+        "form, [role='search'], dialog"
+      ) || input.parentElement;
+
+    if (!scope) {
+      return null;
+    }
+
+    for (const candidate of scope.querySelectorAll(THEME_CLEAR_SELECTOR)) {
+      // Never one of this script's own elements.
+      if (candidate.closest("[data-ai-search-questions], [data-ai-search-status], [data-ai-search-panel]")) {
+        continue;
+      }
+
+      return candidate;
+    }
+
+    return null;
+  }
+
+  function showThemeClearButton(input) {
+    if (!String(input.value || "").length) {
+      return;
+    }
+
+    try {
+      const button = findThemeClearButton(input);
+
+      if (!button) {
+        return;
+      }
+
+      if (button.hidden) {
+        button.hidden = false;
+      } else if (button.classList.contains("hidden")) {
+        button.classList.remove("hidden");
+      }
+    } catch (error) {
+      // Cosmetic only; never affect search.
+    }
+  }
+
 
   function attachInput(input) {
     if (!isSearchInput(input) || attachedInputs.has(input)) {
@@ -2491,7 +4301,22 @@ function showStatus(
           state.query = "";
           state.lastStartedQuery = "";
           input.removeAttribute("aria-busy");
+
+          // Merchant questions, if configured (no-op otherwise).
+          showQuestionSuggestions(input, { replace: true });
           return;
+        }
+
+        // The shopper started typing: questions shown outside the
+        // native dropdown (theme area / panel) go away. In the
+        // native dropdown they are replaced by the AI status as
+        // before.
+        if (
+          state.mode === "questions" &&
+          state.questionKind &&
+          state.questionKind !== "native"
+        ) {
+          hideQuestionSuggestions(input);
         }
 
         if (query.length < CFG.minLength) {
@@ -2512,6 +4337,10 @@ function showStatus(
           event.preventDefault();
           event.stopImmediatePropagation();
 
+          // The theme's own typing handler didn't run: show its Clear
+          // button the way it would (see showThemeClearButton).
+          showThemeClearButton(input);
+
           showStatus(input, "Looking for best result...", "loading");
           return;
         }
@@ -2519,10 +4348,119 @@ function showStatus(
         event.preventDefault();
         event.stopImmediatePropagation();
 
+        showThemeClearButton(input);
+
+        // Instant local results (no-op once loaded or turned off).
+        ensureLocalCatalog();
+
         scheduleSearch(input, query);
       },
       true
     );
+
+    // -------------------------------------------------------
+    // Merchant search questions (see SEARCH QUESTIONS). Every
+    // handler below returns immediately unless questions are
+    // configured and currently shown for an empty input.
+    // -------------------------------------------------------
+
+    const showQuestionsIfEmpty = () => {
+      if (!questionsAllowedFor(input) || !getSearchQuestions()) {
+        return;
+      }
+
+      if (
+        state.mode === "questions" &&
+        getQuestionGroup(questionContainerFor(input))
+      ) {
+        return;
+      }
+
+      showQuestionSuggestions(input, {
+        // Our own earlier results/status may still be in the
+        // dropdown; theme-owned empty-state content is kept.
+        replace: Boolean(state.markup || state.statusText)
+      });
+    };
+
+    // Load the product list for instant results before the first
+    // keystroke (once per page; kept for CFG.localCatalogTtl).
+    const loadLocalCatalog = () => {
+      ensureLocalCatalog();
+    };
+
+    input.addEventListener("focus", loadLocalCatalog);
+    input.addEventListener("pointerdown", loadLocalCatalog);
+
+    // Already focused before this script started (e.g. a theme that
+    // auto-focuses its search box): load it now.
+    if (document.activeElement === input) {
+      loadLocalCatalog();
+    }
+
+    input.addEventListener("focus", showQuestionsIfEmpty);
+    input.addEventListener("click", showQuestionsIfEmpty);
+
+    input.addEventListener(
+      "keydown",
+      event => {
+        if (state.mode !== "questions" || !questionsAllowedFor(input)) {
+          return;
+        }
+
+        const options = getQuestionOptions(input);
+
+        if (!options.length) {
+          return;
+        }
+
+        const current =
+          typeof state.activeQuestion === "number" ? state.activeQuestion : -1;
+
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+
+          setActiveQuestion(
+            input,
+            event.key === "ArrowDown"
+              ? (current + 1) % options.length
+              : (current <= 0 ? options.length - 1 : current - 1)
+          );
+        } else if (event.key === "Enter" && current >= 0) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+
+          selectQuestion(
+            input,
+            options[current].getAttribute("data-ai-search-question")
+          );
+        }
+      },
+      true
+    );
+
+    input.addEventListener("keyup", event => {
+      // Some themes (Dawn family) close their dropdown on any key
+      // release while the query is empty. Keep it open while the
+      // questions are shown; once the shopper types, the query is
+      // no longer empty and key events reach the theme as usual.
+      if (state.mode === "questions" && questionsAllowedFor(input)) {
+        event.stopPropagation();
+      }
+    });
+
+    input.addEventListener("blur", () => {
+      if (state.mode !== "questions") {
+        return;
+      }
+
+      setTimeout(() => {
+        if (state.mode === "questions" && document.activeElement !== input) {
+          hideQuestionSuggestions(input, { close: true });
+        }
+      }, 150);
+    });
   }
 
 
@@ -2539,24 +4477,207 @@ function showStatus(
   // FORM SUBMIT / ENTER
   // =========================================================
 
+
+  /*
+   * One AI search for Enter / the search button, the same on
+   * every theme:
+   *
+   *  - It has its own request slot (like a selected question),
+   *    so theme reactions to Enter (closing the drawer, input
+   *    events, re-renders) can't silently drop it — that is what
+   *    made some themes need a second Enter.
+   *  - If the dropdown search already asked the AI for these
+   *    exact words, that answer is reused instead of cancelled
+   *    and asked again (faster, and no lost answer).
+   *  - Pressing Enter again while it runs does not start a
+   *    second search.
+   *  - If the AI fails, the normal results page still opens with
+   *    the shopper's words, so Enter always does something.
+   */
+  async function runAISubmit(input, form) {
+    const query =
+      String(
+        input.value ||
+        ""
+      ).trim();
+
+    if (!query) {
+      return;
+    }
+
+    attachInput(
+      input
+    );
+
+    const state =
+      getState(input);
+
+    if (
+      state.submitLane &&
+      !state.submitLane.cancelled &&
+      state.submitLane.query === query
+    ) {
+      return;
+    }
+
+    if (state.submitLane) {
+      state.submitLane.cancelled = true;
+    }
+
+    const lane = { request: 0, controller: null, query, cancelled: false };
+    state.submitLane = lane;
+
+    // Keep the dropdown's AI request for these words running.
+    const running = inFlight.get(`${SEARCH_MODE}:${query.toLowerCase()}`);
+
+    if (running && state.controller === running.controller) {
+      state.controller = null;
+    }
+
+    if (state.mode === "questions") {
+      hideQuestionSuggestions(input);
+    }
+
+    cancelState(
+      state
+    );
+
+    state.query = query;
+
+    // Visible feedback on every theme: the theme's dropdown if the
+    // app knows it, otherwise a line under the theme's search box.
+    const inDropdown = Boolean(getResultContainer(input));
+    const showMessage = text => {
+      if (state.questionPendingElement) {
+        state.questionPendingElement.remove();
+        state.questionPendingElement = null;
+      }
+
+      if (inDropdown) {
+        showStatus(input, text, text === "Just a moment…" ? "loading" : "no-results");
+      } else {
+        showQuestionPending(input, { kind: "panel", container: null }, text);
+      }
+    };
+
+    showMessage("Just a moment…");
+
+    const cancel = () => {
+      lane.cancelled = true;
+
+      if (lane.controller) {
+        lane.controller.abort();
+      }
+
+      if (state.questionPendingElement) {
+        state.questionPendingElement.remove();
+        state.questionPendingElement = null;
+      }
+    };
+
+    const onKeydown = event => {
+      if (event.key === "Escape") {
+        cancel();
+      }
+    };
+
+    const onInput = event => {
+      const value =
+        event.target === input ? String(input.value || "").trim() : "";
+
+      if (value && value !== query) {
+        cancel();
+      }
+    };
+
+    document.addEventListener("keydown", onKeydown, true);
+    document.addEventListener("input", onInput, true);
+
+    let result = null;
+    let failed = false;
+
+    try {
+      ({ result } = await requestAI(query, lane, SEARCH_MODE));
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        failed = true;
+        console.error(
+          "[Askmerce] Submit error:",
+          error
+        );
+      }
+    } finally {
+      document.removeEventListener("keydown", onKeydown, true);
+      document.removeEventListener("input", onInput, true);
+    }
+
+    if (lane.cancelled || state.submitLane !== lane) {
+      return;
+    }
+
+    state.submitLane = null;
+
+    if (failed) {
+      window.location.assign(searchResultsUrl(form, query));
+      return;
+    }
+
+    const products =
+      Array.isArray(
+        result?.products
+      )
+        ? result.products
+        : [];
+
+    /*
+     * No AI recommendation.
+     *
+     * Stay inside predictive search.
+     */
+    const aiQuery =
+      products.length
+        ? buildAIQuery(products, query)
+        : "";
+
+    if (!aiQuery) {
+      showMessage(noResultsText(query));
+      return;
+    }
+
+    /*
+     * Save original query + AI query.
+     * Full search page can restore the original
+     * customer wording.
+     */
+    savePendingSearch(
+      query,
+      aiQuery
+    );
+
+    /*
+     * Theme form parameters are kept; Shopify receives the
+     * internal AI query.
+     */
+    window.location.assign(
+      searchResultsUrl(form, aiQuery)
+    );
+  }
+
   document.addEventListener(
     "submit",
 
-    async event => {
+    event => {
 
       const form =
         event.target;
-
 
       if (
         !form ||
         form.tagName !==
           "FORM"
       ) {
-
         return;
       }
-
 
       const input =
         form.querySelector(
@@ -2567,15 +4688,12 @@ function showStatus(
           ].join(",")
         );
 
-
       if (
         !input ||
         !isSearchInput(input)
       ) {
-
         return;
       }
-
 
       const query =
         String(
@@ -2583,12 +4701,9 @@ function showStatus(
           ""
         ).trim();
 
-
       if (!query) {
-
         return;
       }
-
 
       const method =
         String(
@@ -2598,214 +4713,79 @@ function showStatus(
           "get"
         ).toLowerCase();
 
-
       if (
         method !==
         "get"
       ) {
-
         return;
       }
 
-
       event.preventDefault();
-
       event.stopImmediatePropagation();
 
-
-      attachInput(
-        input
-      );
-
-
-      const state =
-        getState(input);
-
-
-      if (
-        state.timer
-      ) {
-
-        clearTimeout(
-          state.timer
-        );
-
-
-        state.timer =
-          null;
-      }
-
-
-      cancelState(
-        state
-      );
-
-
-      showStatus(
-        input,
-        "Searching with AI...",
-        "loading"
-      );
-
-
-      try {
-
-        const {
-          result
-        } =
-          await requestAI(
-            query,
-            state,
-            SEARCH_MODE
-          );
-
-
-        const products =
-          Array.isArray(
-            result?.products
-          )
-            ? result.products
-            : [];
-
-
-        /*
-         * No AI recommendation.
-         *
-         * Stay inside predictive search.
-         */
-        if (
-          !products.length
-        ) {
-
-          showStatus(
-            input,
-
-            noResultsText(query),
-
-            "no-results"
-          );
-
-
-          return;
-        }
-
-
-        const aiQuery =
-          buildAIQuery(
-            products,
-            query
-          );
-
-
-        if (!aiQuery) {
-
-          showStatus(
-            input,
-
-            noResultsText(query),
-
-            "no-results"
-          );
-
-
-          return;
-        }
-
-
-        /*
-         * Save original query + AI query.
-         * Full search page can restore the original
-         * customer wording.
-         */
-        savePendingSearch(
-          query,
-          aiQuery
-        );
-
-
-        const action =
-          form.getAttribute(
-            "action"
-          ) ||
-          window.Shopify
-            ?.routes
-            ?.search_url ||
-          "/search";
-
-
-        const target =
-          new URL(
-            action,
-            window.location.origin
-          );
-
-
-        /*
-         * Preserve theme form parameters.
-         */
-        for (
-          const [
-            key,
-            value
-          ]
-          of new FormData(
-            form
-          ).entries()
-        ) {
-
-          if (
-            key ===
-            "q"
-          ) {
-
-            continue;
-          }
-
-
-          if (
-            typeof value ===
-            "string"
-          ) {
-
-            target.searchParams.append(
-              key,
-              value
-            );
-          }
-        }
-
-
-        /*
-         * Shopify receives the internal AI query.
-         */
-        target.searchParams.set(
-          "q",
-          aiQuery
-        );
-
-
-        window.location.assign(
-          target.toString()
-        );
-
-      } catch (
-        error
-      ) {
-
-        if (
-          error?.name !==
-          "AbortError"
-        ) {
-
-          console.error(
-            "[AI Product Search] Submit error:",
-            error
-          );
-        }
-      }
-
+      runAISubmit(input, form);
     },
 
+    true
+  );
+
+  /*
+   * Enter in the search box, handled before the theme's own key
+   * handlers (document capture phase). Some themes navigate to
+   * their normal search from their own Enter handler, or have no
+   * real form submit, so the submit listener above never ran.
+   * Left to the theme: a highlighted dropdown result (the theme
+   * opens it), a highlighted merchant question (handled by the
+   * questions), IME composition, and non-GET forms.
+   */
+  document.addEventListener(
+    "keydown",
+    event => {
+      if (
+        event.key !== "Enter" ||
+        event.isComposing ||
+        event.defaultPrevented ||
+        event.shiftKey || event.ctrlKey || event.metaKey || event.altKey
+      ) {
+        return;
+      }
+
+      const input = event.target;
+
+      if (!isSearchInput(input) || !String(input.value || "").trim()) {
+        return;
+      }
+
+      const form = input.form;
+
+      if (
+        form &&
+        String(form.getAttribute("method") || "get").toLowerCase() !== "get"
+      ) {
+        return;
+      }
+
+      const state = getState(input);
+
+      if (state.mode === "questions" && state.activeQuestion >= 0) {
+        return;
+      }
+
+      if (input.getAttribute("aria-activedescendant")) {
+        return;
+      }
+
+      const container = getResultContainer(input);
+
+      if (container && container.querySelector('[aria-selected="true"]')) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      runAISubmit(input, form);
+    },
     true
   );
 
@@ -2878,9 +4858,6 @@ function showStatus(
 
   function init() {
 
-    console.log(
-      "[AI Product Search] AI-owned predictive search loaded"
-    );
 
 
     // Keep Shopify native predictive-search requests enabled.

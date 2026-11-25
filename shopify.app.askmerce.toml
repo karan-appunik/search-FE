@@ -1,0 +1,66 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+#
+# Askmerce: the new App Store app (new organization).
+# The old published app keeps using shopify.app.toml /
+# shopify.app.production.toml; don't point those at this app.
+
+client_id = "4ae26657ab340f278d223800e97dbbf3"
+application_url = "https://askmerce.space" 
+embedded = true
+name = "Askmerce"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_inventory,read_products,write_app_proxy"
+
+# Storefront requests: /apps/askmerce/* -> this app's /api/ai-search/*.
+# Its own subpath (not the old app's "ai-search"), so a store with both
+# apps installed never has two apps on the same path.
+[app_proxy]
+url = "/api/ai-search"
+prefix = "apps"
+subpath = "askmerce"
+
+[webhooks]
+# Same version as the app code (ApiVersion.July26 in app/shopify.server.js).
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/uninstalled"
+topics = ["app/uninstalled"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/app/scopes_update"
+topics = ["app/scopes_update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/create"
+topics = ["products/create"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/update"
+topics = ["products/update"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/products/delete"
+topics = ["products/delete"]
+
+[[webhooks.subscriptions]]
+uri = "/webhooks/inventory_levels/update"
+topics = ["inventory_levels/update"]
+
+# Mandatory GDPR compliance webhooks (required for every App Store app).
+# Declared in this table, not in [[webhooks.subscriptions]].
+[webhooks.privacy_compliance]
+customer_data_request_url = "/webhooks/customers/data_request"
+customer_deletion_url = "/webhooks/customers/redact"
+shop_deletion_url = "/webhooks/shop/redact"
+
+[auth]
+redirect_urls = [ "https://askmerce.space/api/auth" ]
+
+[build]
+include_config_on_deploy = true
+# Production app: never let `shopify app dev` replace askmerce.space
+# with a temporary tunnel URL.
+automatically_update_urls_on_dev = false

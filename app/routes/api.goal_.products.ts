@@ -12,6 +12,7 @@ import {
 // =========================================================
 //
 // GET /api/goal/products?page=&limit=&search=
+//     optional: &sort= &inStock=1 &productType=
 //
 // Authenticated admin-only resource route. Resolves the shop
 // from the Shopify session (never from client input) and
@@ -119,6 +120,25 @@ export const loader = async ({
         "search",
         search
       );
+
+    }
+
+
+    // Optional sort / filters, passed through as-is (the
+    // backend whitelists them).
+    for (const key of ["sort", "inStock", "productType"]) {
+
+      const value =
+        url.searchParams.get(key);
+
+      if (value) {
+
+        backendUrl.searchParams.set(
+          key,
+          value.slice(0, 200)
+        );
+
+      }
 
     }
 

@@ -179,8 +179,14 @@ async function runQuery(
   }
 }
 
+// A product node from PRODUCTS_QUERY. Only `variants.nodes` is read
+// here; the rest is passed to the backend as-is.
+type ShopifyProductNode = Record<string, unknown> & {
+  variants?: { nodes?: unknown[] };
+};
+
 async function fetchAllActiveProducts(graphql: AdminGraphql) {
-  const products: Record<string, any>[] = [];
+  const products: ShopifyProductNode[] = [];
   let after: string | null = null;
 
   do {

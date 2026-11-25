@@ -1,8 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { useFetcher, useLoaderData } from "react-router";
+import { Link, useFetcher, useLoaderData } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { backendInternalFetch } from "../utils/backend.server";
+import {
+  Banner,
+  Button,
+  EmptyState,
+  Icon,
+  LinkButton,
+  Page,
+  TextField,
+  initials
+} from "../components/ui";
 
 
 // =========================================================
@@ -37,7 +47,8 @@ import { backendInternalFetch } from "../utils/backend.server";
 // a separate, later phase.
 // =========================================================
 
-const PAGE_SIZE = 25;
+// Products per page in the product list.
+const PAGE_SIZE = 10;
 
 /*
  * "Current Top Search Products" (rule test panel, including its
@@ -47,6 +58,15 @@ const PAGE_SIZE = 25;
 const SHOW_RULE_TEST_PANEL = false;
 
 const SEARCH_DEBOUNCE_MS = 400;
+
+
+// Sort choices for "Choose products" (applied by the backend).
+const SORT_OPTIONS = [
+  { value: "title_asc", label: "Name, A–Z" },
+  { value: "title_desc", label: "Name, Z–A" },
+  { value: "price_asc", label: "Price, low to high" },
+  { value: "price_desc", label: "Price, high to low" }
+];
 
 
 /*
@@ -74,6 +94,17 @@ const RULE_TYPES = [
       "Push selected products lower in search results."
   }
 ];
+
+
+/*
+ * Look of each rule type (icon + soft tone), matching the
+ * dashboard. Display only.
+ */
+const RULE_LOOK = {
+  boost: { icon: "arrowUp", tone: "sage" },
+  demote: { icon: "arrowDown", tone: "sage" },
+  exclude: { icon: "eyeOff", tone: "sage" }
+};
 
 
 /*
@@ -138,6 +169,23 @@ export default function GoalProducts() {
     setPage
   ] =
     useState(1);
+
+
+  /*
+   * Sort / filters for the product list. Applied by the backend
+   * to the whole catalog (not just the page on screen), so they
+   * stay correct across pages. Defaults = the original list.
+   */
+  const [sort, setSort] = useState("title_asc");
+  const [productType, setProductType] = useState("");
+  const [productTypes, setProductTypes] = useState([]);
+
+  /*
+   * Bumped to reload the current list in the background, so
+   * products that come back in stock appear (and sold-out ones
+   * disappear) without the merchant refreshing the page.
+   */
+  const [refreshTick, setRefreshTick] = useState(0);
 
 
   /*
@@ -275,12 +323,87 @@ export default function GoalProducts() {
     }
 
 
+    if (sort !== "title_asc") {
+      params.set("sort", sort);
+    }
+
+    // Only in-stock products can be chosen: out-of-stock products
+    // never show in storefront search anyway.
+    params.set("inStock", "1");
+
+    if (productType) {
+      params.set("productType", productType);
+    }
+
+
     fetcherRef.current.load(
       `/api/goal/products?${params.toString()}`
     );
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search]);
+  }, [page, search, sort, productType, refreshTick]);
+
+
+  /*
+   * Stock changes reach the app's catalog through Shopify's
+   * inventory/product webhooks. Reload the list every minute
+   * while the page is visible, and when the merchant returns to
+   * the tab, so it always matches current stock.
+   */
+  useEffect(() => {
+    const REFRESH_MS = 60000;
+
+    const refresh = () => {
+      if (
+        document.visibilityState === "visible" &&
+        fetcherRef.current.state === "idle"
+      ) {
+        setRefreshTick((tick) => tick + 1);
+      }
+    };
+
+    const timer = setInterval(refresh, REFRESH_MS);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
+
+
+  // Keep the last known product types so the filter list does
+  // not flicker while a page is loading.
+  useEffect(() => {
+    const types = fetcher.data?.data?.productTypes;
+
+    if (Array.isArray(types)) {
+      setProductTypes(types);
+    }
+  }, [fetcher.data]);
+
+
+  // A new sort or filter starts again from page 1.
+  const changeSort = (value) => {
+    setSort(value);
+    setPage(1);
+  };
+
+  const changeProductType = (value) => {
+    setProductType(value);
+    setPage(1);
+  };
+
+  const hasActiveFilters =
+    sort !== "title_asc" || Boolean(productType);
+
+  const clearFilters = () => {
+    setSort("title_asc");
+    setProductType("");
+    setPage(1);
+  };
 
 
   const isLoading =
@@ -474,14 +597,6 @@ export default function GoalProducts() {
     );
 
 
-  const selectedRuleType =
-    RULE_TYPES.find(
-      rule =>
-        rule.value === ruleType
-    ) ||
-    null;
-
-
   /*
    * Search always uses the SAVED rule, so the rule test panel
    * warns when the form differs from it.
@@ -555,645 +670,430 @@ export default function GoalProducts() {
     Boolean(ruleType) &&
     selectedProducts.length > 0;
 
+  /*
+   * Display only: whether the form differs from the saved rule
+   * (name included), so the Save button can show "Save rule"
+   * vs "Saved".
+   */
+  const hasFormChanges = savedGoal
+    ? ruleName.trim() !== (savedGoal.name || "").trim() || hasUnsavedRuleChanges
+    : Boolean(ruleName.trim()) || hasUnsavedRuleChanges;
+
+
+
+  const selectedChips = selectedProducts.length > 0 && (
+    <div className="gr-chips">
+      {selectedProducts.map((product) => (
+        <span className="gr-chip" key={product.matchKey}>
+          <span className="gr-chip__thumb">
+            {product.image ? (
+              <img src={product.image} alt="" />
+            ) : (
+              initials(product.title || product.sku)
+            )}
+          </span>
+          <span className="gr-chip__text" title={product.title || product.sku || ""}>
+            {product.title || "Untitled product"}
+          </span>
+          <button
+            type="button"
+            className="gr-chip__remove"
+            aria-label={`Remove ${product.title || "product"}`}
+            onClick={() => removeSelected(product.matchKey)}
+          >
+            <Icon name="close" size={12} strokeWidth={2.2} />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+
 
   return (
-    <s-page heading="Goal Products">
+    <Page>
+      {/* ---------- Header ---------- */}
+      <header className="dash-hero">
+        <div className="dash-hero__text">
+          <Link to="/app" className="gr-back">
+            <Icon name="back" size={13} />
+            Dashboard
+          </Link>
+          <h1 className="dash-hero__title">Goals &amp; rules</h1>
+          <p className="dash-hero__sub">
+            Choose products and decide where they appear in your store&apos;s search results:
+            higher, lower, or not at all.
+          </p>
+        </div>
+
+        <div className="dash-hero__side">
+          <span className={`dash-pill${savedGoal ? "" : " dash-pill--warn"}`}>
+            <span className="dash-pill__dot" aria-hidden="true" />
+            {savedGoal
+              ? `Rule saved${savedGoal.ruleType ? ` · ${RULE_TYPES.find(rule => rule.value === savedGoal.ruleType)?.label || savedGoal.ruleType}` : ""}`
+              : "No rule yet"}
+          </span>
+        </div>
+      </header>
 
       {/* =================================================
-        // 1. ADD RULE
+        // 1. RULE
         // ================================================= */}
 
-      <s-section heading="Add Rule">
+      {!isRuleFormOpen ? (
+        <section className="dash-card" aria-labelledby="gr-intro">
+          <div className="dash-card__head">
+            <h2 id="gr-intro" className="dash-card__title">What a rule can do</h2>
+            <span className="dash-card__meta">One rule per store</span>
+          </div>
 
-        <s-stack
-          direction="block"
-          gap="base"
-        >
+          <div className="gr-types gr-types--static">
+            {RULE_TYPES.map((rule) => (
+              <div className="gr-type" key={rule.value}>
+                <span className={`dash-icon dash-tone--${RULE_LOOK[rule.value].tone}`} aria-hidden="true">
+                  <Icon name={RULE_LOOK[rule.value].icon} size={15} />
+                </span>
+                <span className="gr-type__label">{rule.label}</span>
+                <span className="gr-type__text">{rule.description}</span>
+              </div>
+            ))}
+          </div>
 
-          {
-            !isRuleFormOpen && (
-
-              <s-button
-                onClick={
-                  () =>
-                    setIsRuleFormOpen(true)
-                }
-              >
-                + Add Rule
-              </s-button>
-
-            )
-          }
-
-          {
-            isRuleFormOpen && (
-
-              <s-stack
-                direction="block"
-                gap="base"
-              >
-
-                <s-paragraph>
-                  Choose how this rule should affect the
-                  products selected below. The rule type and
-                  name can be changed at any time before saving.
-                </s-paragraph>
-
-                <s-text-field
-                  label="Rule Name"
-                  placeholder="e.g. Clear Stack"
-                  value={ruleName}
-                  onChange={
-                    event =>
-                      setRuleName(
-                        event?.currentTarget?.value ?? ""
-                      )
-                  }
-                />
-
-                <s-choice-list
-                  label="Rule Type"
-                  name="ruleType"
-                  multiple={false}
-                  values={
-                    ruleType
-                      ? [ruleType]
-                      : []
-                  }
-                  onChange={
-                    event =>
-                      setRuleType(
-                        event?.currentTarget?.values?.[0] ?? ""
-                      )
-                  }
-                >
-
-                  {
-                    RULE_TYPES.map(
-                      rule => (
-
-                        <s-choice
-                          key={rule.value}
-                          value={rule.value}
-                          details={rule.description}
-                        >
-                          {rule.label}
-                        </s-choice>
-
-                      )
-                    )
-                  }
-
-                </s-choice-list>
-
-                <s-box
-                  padding="base"
-                  borderWidth="base"
-                  borderRadius="base"
-                >
-
-                  <s-stack
-                    direction="block"
-                    gap="small"
-                  >
-
-                    <s-text type="strong">
-                      Rule Summary
-                    </s-text>
-
-                    <s-text>
-                      Name:{" "}
-                      {
-                        ruleName.trim() ||
-                        "Not set"
-                      }
-                    </s-text>
-
-                    <s-text>
-                      Type:{" "}
-                      {
-                        selectedRuleType
-                          ? selectedRuleType.label
-                          : "Not selected"
-                      }
-                    </s-text>
-
-                    <s-text color="subdued">
-                      {
-                        selectedRuleType
-                          ? selectedRuleType.description
-                          : "Choose a rule type above to see what it does."
-                      }
-                    </s-text>
-
-                    <s-text color="subdued">
-                      Applies to{" "}
-                      {selectedProducts.length}{" "}
-                      selected{" "}
-                      {
-                        selectedProducts.length === 1
-                          ? "product"
-                          : "products"
-                      }
-                      .
-                    </s-text>
-
-                  </s-stack>
-
-                </s-box>
-
-                {
-                  goalActionResult?.success === true &&
-                  isSaving === false &&
-                  isDeleting === false && (
-
-                    <s-banner tone="success">
-                      {
-                        goalActionResult?.deleted !== undefined
-                          ? (
-                              goalActionResult.deleted
-                                ? "Rule deleted."
-                                : "No saved rule existed to delete."
-                            )
-                          : "Rule saved."
-                      }
-                    </s-banner>
-
-                  )
-                }
-
-                {
-                  goalActionResult?.success === false && (
-
-                    <s-banner tone="critical">
-                      {
-                        goalActionResult?.message ||
-                        "Unable to save the rule."
-                      }
-                    </s-banner>
-
-                  )
-                }
-
-                <s-stack
-                  direction="inline"
-                  gap="base"
-                  alignItems="center"
-                >
-
-                  <s-button
-                    variant="primary"
-                    onClick={saveRule}
-                    {...(isSaving ? { loading: true } : {})}
-                    {...(!canSave ? { disabled: true } : {})}
-                  >
-                    {isSaving ? "Saving…" : "Save Rule"}
-                  </s-button>
-
-                  {
-                    savedGoal && (
-
-                      <s-button
-                        variant="tertiary"
-                        onClick={deleteRule}
-                        {...(isDeleting ? { loading: true } : {})}
-                      >
-                        {isDeleting ? "Deleting…" : "Delete Rule"}
-                      </s-button>
-
-                    )
-                  }
-
-                </s-stack>
-
-                {
-                  !canSave && (
-
-                    <s-text color="subdued">
-                      A rule name, a rule type, and at least one
-                      selected product are required before
-                      saving.
-                    </s-text>
-
-                  )
-                }
-
-              </s-stack>
-
-            )
-          }
-
-        </s-stack>
-
-      </s-section>
-
-      {/* =================================================
-        // 2. SELECTED PRODUCTS
-        // ================================================= */}
-
-      <s-section
-        heading={`Selected Products (${selectedProducts.length})`}
-      >
-
-        <s-stack
-          direction="block"
-          gap="base"
-        >
-
-          {
-            selectedProducts.length === 0 ? (
-
-              <s-paragraph>
-                No products selected yet. Check the boxes in
-                &quot;All Products&quot; below to add products
-                to this rule.
-              </s-paragraph>
-
+          <div className="gr-intro__action">
+            <Button variant="primary" size="sm" icon="plus" onClick={() => setIsRuleFormOpen(true)}>
+              Create a rule
+            </Button>
+            <span className="ui-help">Takes about a minute. Nothing changes until you save.</span>
+          </div>
+        </section>
+      ) : (
+        <section className="dash-card" aria-labelledby="gr-rule">
+          <div className="dash-card__head">
+            <h2 id="gr-rule" className="dash-card__title">
+              {savedGoal ? "Your rule" : "New rule"}
+            </h2>
+            {hasFormChanges && canSave && !isSaving ? (
+              <span className="gr-unsaved">
+                <span className="dash-pill__dot" aria-hidden="true" />
+                Unsaved changes
+              </span>
             ) : (
+              <span className="dash-card__meta">3 quick steps</span>
+            )}
+          </div>
 
-              <s-stack
-                direction="block"
-                gap="small-200"
-              >
+          <ol className="gr-steps">
+            <li className="gr-step">
+              <span className={`dash-num ${ruleName.trim() ? "dash-tone--sage" : "dash-tone--slate"}`} aria-hidden="true">
+                {ruleName.trim() ? <Icon name="check" size={13} strokeWidth={2.4} /> : "1"}
+              </span>
+              <div className="gr-step__body">
+                <label htmlFor="rule-name" className="gr-step__title">Name your rule</label>
+                <p className="gr-step__text">Only you see this name. It helps you remember what the rule is for.</p>
+                <div className="gr-step__field">
+                  <TextField
+                    id="rule-name"
+                    placeholder="e.g. Push winter stock"
+                    value={ruleName}
+                    onChange={setRuleName}
+                  />
+                </div>
+              </div>
+            </li>
 
-                {
-                  selectedProducts.map(
-                    product => (
+            <li className="gr-step">
+              <span className={`dash-num ${ruleType ? "dash-tone--sage" : "dash-tone--mauve"}`} aria-hidden="true">
+                {ruleType ? <Icon name="check" size={13} strokeWidth={2.4} /> : "2"}
+              </span>
+              <div className="gr-step__body">
+                <span className="gr-step__title" id="rule-type-label">What should it do?</span>
+                <p className="gr-step__text">Pick one. You can change it anytime.</p>
 
-                      <s-box
-                        key={product.matchKey}
-                        padding="small"
-                        borderWidth="base"
-                        borderRadius="base"
-                      >
+                <div className="gr-types" role="radiogroup" aria-labelledby="rule-type-label">
+                  {RULE_TYPES.map((rule) => {
+                    const checked = ruleType === rule.value;
+                    const look = RULE_LOOK[rule.value];
 
-                        <s-stack
-                          direction="inline"
-                          gap="base"
-                          alignItems="center"
-                          justifyContent="space-between"
-                        >
+                    return (
+                      <label key={rule.value} className={`gr-type gr-type--choice${checked ? " is-checked" : ""}`}>
+                        <input
+                          type="radio"
+                          name="ruleType"
+                          value={rule.value}
+                          checked={checked}
+                          onChange={() => setRuleType(rule.value)}
+                          className="gr-type__input"
+                        />
+                        <span className={`dash-icon dash-tone--${look.tone}`} aria-hidden="true">
+                          <Icon name={look.icon} size={15} />
+                        </span>
+                        <span className="gr-type__label">{rule.label}</span>
+                        <span className="gr-type__text">{rule.description}</span>
+                        <span className="gr-type__check" aria-hidden="true">
+                          <Icon name="check" size={11} strokeWidth={2.6} />
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </li>
 
-                          <s-stack
-                            direction="inline"
-                            gap="base"
-                            alignItems="center"
-                          >
+            <li className="gr-step">
+              <span className={`dash-num ${selectedProducts.length ? "dash-tone--sage" : "dash-tone--teal"}`} aria-hidden="true">
+                {selectedProducts.length ? <Icon name="check" size={13} strokeWidth={2.4} /> : "3"}
+              </span>
+              <div className="gr-step__body">
+                <span className="gr-step__title">
+                  Pick products
+                  <span className="gr-count">{selectedProducts.length} selected</span>
+                </span>
+                <p className="gr-step__text">
+                  {selectedProducts.length
+                    ? "Remove one with ×, or tick more in the product list below."
+                    : "Tick the products in the list below."}
+                </p>
+                {selectedChips && <div className="gr-step__field">{selectedChips}</div>}
+              </div>
+            </li>
+          </ol>
 
-                            {
-                              product.image ? (
+          {/* Save */}
+          <div className="gr-save">
+            {goalActionResult?.success === true &&
+              isSaving === false &&
+              isDeleting === false &&
+              !hasFormChanges && (
+                <Banner tone="success">
+                  {goalActionResult?.deleted !== undefined
+                    ? goalActionResult.deleted
+                      ? "Rule deleted."
+                      : "There was no saved rule to delete."
+                    : "Rule saved. It now applies to your store's search."}
+                </Banner>
+              )}
 
-                                <s-thumbnail
-                                  src={product.image}
-                                  alt={product.title || product.sku}
-                                  size="small"
-                                />
+            {goalActionResult?.success === false && (
+              <Banner tone="warning">
+                {goalActionResult?.message || "The rule couldn't be saved. Please try again."}
+              </Banner>
+            )}
 
-                              ) : (
+            <div className="gr-save__actions">
+              {savedGoal && !hasFormChanges && !isSaving ? (
+                <Button variant="secondary" size="sm" icon="check" disabled>
+                  Saved
+                </Button>
+              ) : (
+                <Button
+                  variant={canSave ? "primary" : "secondary"}
+                  size="sm"
+                  loading={isSaving}
+                  disabled={!canSave}
+                  onClick={saveRule}
+                >
+                  {isSaving ? "Saving…" : "Save rule"}
+                </Button>
+              )}
 
-                                <s-text color="subdued">
-                                  No image
-                                </s-text>
+              {savedGoal && (
+                <LinkButton disabled={isDeleting} onClick={deleteRule}>
+                  {isDeleting ? "Deleting…" : "Delete rule"}
+                </LinkButton>
+              )}
 
-                              )
-                            }
+            </div>
+          </div>
+        </section>
+      )}
 
-                            <s-stack
-                              direction="block"
-                              gap="small-200"
-                            >
+      {/* =================================================
+        // 2. SELECTED PRODUCTS (shown here only while no rule
+        //    form is open; inside the form they are step 3)
+        // ================================================= */}
 
-                              <s-text type="strong">
-                                {
-                                  product.title ||
-                                  "Untitled product"
-                                }
-                              </s-text>
-
-                              <s-text color="subdued">
-                                {
-                                  product.sku
-                                    ? `SKU: ${product.sku}`
-                                    : "No SKU"
-                                }
-                              </s-text>
-
-                            </s-stack>
-
-                          </s-stack>
-
-                          <s-button
-                            variant="tertiary"
-                            onClick={
-                              () =>
-                                removeSelected(product.matchKey)
-                            }
-                          >
-                            Remove
-                          </s-button>
-
-                        </s-stack>
-
-                      </s-box>
-
-                    )
-                  )
-                }
-
-              </s-stack>
-
-            )
-          }
-
-        </s-stack>
-
-      </s-section>
+      {!isRuleFormOpen && selectedProducts.length > 0 && (
+        <section className="dash-card" aria-labelledby="gr-selected">
+          <div className="dash-card__head">
+            <h2 id="gr-selected" className="dash-card__title">
+              Selected products ({selectedProducts.length})
+            </h2>
+          </div>
+          {selectedChips}
+        </section>
+      )}
 
       {/* =================================================
         // 3. CURRENT TOP SEARCH PRODUCTS
         // ================================================= */}
 
-      {
-        SHOW_RULE_TEST_PANEL && (
-          <RuleTestPanel
-            savedGoal={savedGoal}
-            hasUnsavedChanges={hasUnsavedRuleChanges}
-          />
-        )
-      }
+      {SHOW_RULE_TEST_PANEL && (
+        <RuleTestPanel savedGoal={savedGoal} hasUnsavedChanges={hasUnsavedRuleChanges} />
+      )}
 
       {/* =================================================
         // 4. ALL PRODUCTS
         // ================================================= */}
 
-      <s-section heading="All Products">
+      <section className="dash-card" aria-labelledby="gr-products">
+        <div className="dash-card__head">
+          <div>
+            <h2 id="gr-products" className="dash-card__title">Product list</h2>
+            <p className="gr-card-sub">
+              In-stock products only, the ones shoppers can find. The list updates on its own as stock changes.
+            </p>
+          </div>
+          <span className={`gr-count${selected.size ? " gr-count--on" : ""}`}>
+            {selected.size} selected
+          </span>
+        </div>
 
-        <s-stack
-          direction="block"
-          gap="base"
-        >
+        <div className="ui-stack" style={{ gap: 12 }}>
+          <div className="gr-toolbar">
+            <TextField
+              id="product-search"
+              aria-label="Search products"
+              icon="search"
+              placeholder="Search by title, SKU or handle"
+              value={searchInput}
+              onChange={setSearchInput}
+            />
 
-          <s-paragraph>
-            Search and browse every product synced from
-            Shopify. Select products here to add them to the
-            rule above.
-          </s-paragraph>
-
-          <s-search-field
-            label="Search products"
-            placeholder="Search by title, SKU, or handle"
-            value={searchInput}
-            onChange={
-              event =>
-                setSearchInput(
-                  event?.currentTarget?.value ?? ""
-                )
-            }
-          />
-
-          <s-stack
-            direction="inline"
-            gap="base"
-            alignItems="center"
-          >
-
-            <s-text type="strong">
-              {selected.size}{" "}
-              {
-                selected.size === 1
-                  ? "product"
-                  : "products"
-              }{" "}
-              selected
-            </s-text>
-
-            {
-              !isLoading &&
-              products.length > 0 && (
-
-                <s-button
-                  onClick={toggleSelectAllOnPage}
+            <div className="gr-filters">
+              <label className="gr-filter">
+                <span className="gr-filter__label">Sort by</span>
+                <select
+                  className="gr-select"
+                  value={sort}
+                  onChange={(event) => changeSort(event.target.value)}
                 >
-                  {
-                    allOnPageSelected
-                      ? "Deselect all on this page"
-                      : "Select all on this page"
-                  }
-                </s-button>
+                  {SORT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-              )
-            }
+              <label className="gr-filter">
+                <span className="gr-filter__label">Type</span>
+                <select
+                  className="gr-select"
+                  value={productType}
+                  onChange={(event) => changeProductType(event.target.value)}
+                  disabled={productTypes.length === 0 && !productType}
+                >
+                  <option value="">All types</option>
+                  {productTypes.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                  {productType && !productTypes.includes(productType) && (
+                    <option value={productType}>{productType}</option>
+                  )}
+                </select>
+              </label>
 
-          </s-stack>
+              {hasActiveFilters && (
+                <LinkButton tone="accent" onClick={clearFilters}>
+                  Clear filters
+                </LinkButton>
+              )}
+            </div>
+          </div>
 
-          {
-            isLoading && (
-              <s-stack
-                direction="inline"
-                gap="small-200"
-                alignItems="center"
-              >
+          {failed && (
+            <Banner tone="warning">
+              {response?.message || "Products couldn't be loaded. Please try again."}
+            </Banner>
+          )}
 
-                <s-spinner
-                  accessibilityLabel="Loading products"
-                  size="base"
+          {isLoading && products.length === 0 && (
+            <div className="ui-empty">
+              <span className="ui-spinner ui-spinner--accent" aria-hidden="true" />
+              <div>Loading products…</div>
+            </div>
+          )}
+
+          {isEmpty && (
+            <EmptyState icon="box">
+              {search
+                ? `No products match "${search}".`
+                : hasActiveFilters
+                  ? "No products match these filters."
+                  : "No in-stock products right now. Sync your catalog from the Dashboard if this looks wrong."}
+            </EmptyState>
+          )}
+
+          {products.length > 0 && (
+            <div
+              className={`gr-list${isLoading ? " gr-list--loading" : ""}`}
+              role="group"
+              aria-label="Products"
+              aria-busy={isLoading || undefined}
+            >
+              <label className="gr-list__head">
+                <input
+                  type="checkbox"
+                  checked={allOnPageSelected}
+                  onChange={toggleSelectAllOnPage}
+                  aria-label={allOnPageSelected ? "Deselect all on this page" : "Select all on this page"}
                 />
+                <span />
+                <span>Product</span>
+                <span>Price</span>
+              </label>
 
-                <s-text>
-                  Loading products…
-                </s-text>
+              {products.map((product) => {
+                const isSelected = selected.has(product.matchKey);
 
-              </s-stack>
-            )
-          }
+                return (
+                  <label
+                    key={product.matchKey}
+                    className={`gr-row${isSelected ? " gr-row--selected" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleProduct(product)}
+                      aria-label={`Select ${product.title || product.sku || "product"}`}
+                    />
+                    <span className="gr-thumb">
+                      {product.image ? (
+                        <img src={product.image} alt="" loading="lazy" />
+                      ) : (
+                        initials(product.title || product.sku)
+                      )}
+                    </span>
+                    <span style={{ minWidth: 0 }}>
+                      <span className="gr-row__title">{product.title || "Untitled product"}</span>
+                      {product.sku && <span className="gr-row__meta">SKU: {product.sku}</span>}
+                    </span>
+                    <span className="gr-row__price">
+                      {typeof product.price === "number" ? `$${product.price.toFixed(2)}` : "—"}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
 
-          {
-            failed && (
-              <s-banner tone="critical">
-
-                {
-                  response?.message ||
-                  "Unable to load products"
-                }
-
-              </s-banner>
-            )
-          }
-
-          {
-            isEmpty && (
-              <s-banner tone="info">
-
-                {
-                  search
-                    ? `No products found for "${search}".`
-                    : "No products found. Sync your Shopify catalog first."
-                }
-
-              </s-banner>
-            )
-          }
-
-          {
-            !isLoading &&
-            products.length > 0 && (
-
-              <s-grid
-                gridTemplateColumns="repeat(auto-fill, minmax(220px, 1fr))"
-                gap="base"
-              >
-
-                {
-                  products.map(
-                    product => (
-
-                      <s-grid-item
-                        key={product.matchKey}
-                      >
-
-                        <s-box
-                          padding="base"
-                          borderWidth="base"
-                          borderRadius="base"
-                        >
-
-                          <s-stack
-                            direction="block"
-                            gap="small"
-                          >
-
-                            <s-checkbox
-                              label="Select"
-                              checked={
-                                selected.has(product.matchKey)
-                              }
-                              onChange={
-                                () =>
-                                  toggleProduct(product)
-                              }
-                            />
-
-                            {
-                              product.image ? (
-
-                                <s-image
-                                  src={product.image}
-                                  alt={product.title || product.sku}
-                                  inlineSize="fill"
-                                  aspectRatio="1/1"
-                                  objectFit="cover"
-                                  borderRadius="base"
-                                />
-
-                              ) : (
-
-                                <s-box
-                                  padding="base"
-                                  borderWidth="base"
-                                  borderRadius="base"
-                                >
-
-                                  <s-text
-                                    color="subdued"
-                                  >
-                                    No image
-                                  </s-text>
-
-                                </s-box>
-
-                              )
-                            }
-
-                            <s-text type="strong">
-                              {
-                                product.title ||
-                                "Untitled product"
-                              }
-                            </s-text>
-
-                            <s-text color="subdued">
-                              {
-                                product.sku
-                                  ? `SKU: ${product.sku}`
-                                  : "No SKU"
-                              }
-                            </s-text>
-
-                            <s-text>
-                              {
-                                typeof product.price === "number"
-                                  ? `$${product.price.toFixed(2)}`
-                                  : "—"
-                              }
-                            </s-text>
-
-                            <s-badge
-                              tone={
-                                product.availableForSale
-                                  ? "success"
-                                  : "critical"
-                              }
-                            >
-                              {
-                                product.availableForSale
-                                  ? "In stock"
-                                  : "Out of stock"
-                              }
-                            </s-badge>
-
-                          </s-stack>
-
-                        </s-box>
-
-                      </s-grid-item>
-
-                    )
-                  )
-                }
-
-              </s-grid>
-
-            )
-          }
-
-          {
-            !isLoading &&
-            products.length > 0 && (
-
-              <s-stack
-                direction="inline"
-                gap="base"
-                alignItems="center"
-              >
-
-                <s-button
-                  onClick={goToPreviousPage}
-                  {...(page <= 1 ? { disabled: true } : {})}
-                >
+          {products.length > 0 && (
+            <div className="gr-footer">
+              <span>Page {page}</span>
+              <div className="gr-pager">
+                <Button variant="secondary" size="sm" disabled={page <= 1} onClick={goToPreviousPage}>
                   Previous
-                </s-button>
-
-                <s-text>
-                  Page {page}
-                </s-text>
-
-                <s-button
-                  onClick={goToNextPage}
-                  {...(!hasMore ? { disabled: true } : {})}
-                >
+                </Button>
+                <Button variant="secondary" size="sm" disabled={!hasMore} onClick={goToNextPage}>
                   Next
-                </s-button>
-
-              </s-stack>
-
-            )
-          }
-
-        </s-stack>
-
-      </s-section>
-
-    </s-page>
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+    </Page>
   );
 }
 
