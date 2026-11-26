@@ -60,7 +60,6 @@ shop_deletion_url = "/webhooks/shop/redact"
 redirect_urls = [ "https://askmerce.space/api/auth" ]
 
 [build]
-include_config_on_deploy = true
 # Production app: never let `shopify app dev` replace askmerce.space
 # with a temporary tunnel URL.
 automatically_update_urls_on_dev = false
