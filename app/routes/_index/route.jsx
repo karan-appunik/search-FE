@@ -1,11 +1,13 @@
 import { useEffect } from "react";
 import { redirect, useNavigate } from "react-router";
-import styles from "./styles.module.css";
 
-// Public landing page. Installation must start from a
-// Shopify-owned surface (App Store requirement 2.3.1), so there
-// is no "enter your shop domain" form here; merchants install
-// and open the app from Shopify.
+import landingCss from "./landing.css?url";
+import landingHtml from "./landing.html?raw";
+
+// Public landing page (askmerce.space). Installation must start
+// from a Shopify-owned surface (App Store requirement 2.3.1), so
+// there is no "enter your shop domain" form here; merchants
+// install and open the app from Shopify.
 // Any sign the request comes from the Shopify admin: open the
 // app (the dashboard) straight away.
 const ADMIN_PARAMS = ["shop", "host", "embedded", "id_token", "hmac"];
@@ -20,10 +22,29 @@ export const loader = async ({ request }) => {
   return null;
 };
 
+export const meta = () => [
+  { title: "Askmerce — Search that understands people" },
+  {
+    name: "description",
+    content:
+      "Askmerce lets shoppers search your Shopify store the way they talk — typos, everyday words and budgets — and shows the right products.",
+  },
+];
+
+export const links = () => [
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap",
+  },
+  { rel: "stylesheet", href: landingCss },
+];
+
 // Shown inside the Shopify admin only for a moment if the admin
 // loaded this address without its usual parameters: it goes on
 // to the dashboard. Outside Shopify (e.g. someone opening the
-// app's address directly) the public description below shows.
+// app's address directly) the landing page below shows.
 function useOpenDashboardWhenEmbedded() {
   const navigate = useNavigate();
 
@@ -50,47 +71,53 @@ function useOpenDashboardWhenEmbedded() {
   }, [navigate]);
 }
 
+// Starts the page's animations and the light/dark switch in the
+// browser, and stops them when the page is left.
+function useLandingBehaviour() {
+  useEffect(() => {
+    let stop = null;
+    let cancelled = false;
+
+    import("./landing-script.js").then(({ startLanding }) => {
+      if (!cancelled) {
+        stop = startLanding();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (stop) {
+        stop();
+      }
+      document.documentElement.removeAttribute("data-theme");
+    };
+  }, []);
+}
+
+// Runs before the page paints: inside the admin it hides the page
+// while going on to the dashboard; outside it picks the colour
+// theme (dark unless the visitor chose light before).
+const BEFORE_PAINT = [
+  "(function(){var s=window.location.search;if(!s)return;var e=true;try{e=window.top!==window.self;}catch(x){}if(e){document.documentElement.style.visibility='hidden';window.location.replace('/app'+s);}})();",
+  "(function(){var t='dark';try{var v=localStorage.getItem('askmerce-theme');if(v==='light'||v==='dark')t=v;}catch(e){}document.documentElement.setAttribute('data-theme',t);})();",
+].join("");
+
 export default function App() {
   useOpenDashboardWhenEmbedded();
+  useLandingBehaviour();
 
   return (
-    <div className={styles.index}>
-      {/* Runs before the page paints, so inside the admin the
-          description never flashes before the dashboard opens. */}
+    <>
       <script
         // eslint-disable-next-line react/no-danger
-        dangerouslySetInnerHTML={{
-          __html:
-            "(function(){var s=window.location.search;if(!s)return;var e=true;try{e=window.top!==window.self;}catch(x){}if(e){document.documentElement.style.visibility='hidden';window.location.replace('/app'+s);}})();"
-        }}
+        dangerouslySetInnerHTML={{ __html: BEFORE_PAINT }}
       />
-      <div className={styles.content}>
-        <h1 className={styles.heading}>Askmerce</h1>
-        <p className={styles.text}>
-          Let shoppers search your store the way they talk, and find the
-          right products instantly.
-        </p>
-        <p>
-          Install Askmerce from the Shopify App Store, then open it
-          from <strong>Apps</strong> in your Shopify admin.
-        </p>
-        <ul className={styles.list}>
-          <li>
-            <strong>Natural-language search</strong>. Shoppers can type
-            requests like &quot;something warm for winter&quot; and AI finds
-            the products that match what they mean.
-          </li>
-          <li>
-            <strong>Instant, typo-tolerant results</strong>. Suggestions appear
-            while shoppers type, even with partial words or spelling mistakes,
-            right in your existing theme search bar.
-          </li>
-          <li>
-            <strong>Search rules</strong>. Boost, exclude or demote selected
-            products in search results to match your merchandising goals.
-          </li>
-        </ul>
-      </div>
-    </div>
+      <div
+        // Static marketing markup kept as HTML so the design stays
+        // exactly as approved; it contains no user input.
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: landingHtml }}
+      />
+    </>
   );
 }
