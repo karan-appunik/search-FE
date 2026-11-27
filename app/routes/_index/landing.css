@@ -617,3 +617,22 @@ html[data-theme="dark"] .orb.c{opacity:.1}
 
 /* walkthrough step numbers: outlined, like step 6 */
 .chap .n{background:transparent !important;color:var(--lime) !important;border:1px solid #64748b}
+
+/* ================= mobile: no sideways scroll ================= */
+/* keep the hero's glow circles inside the hero */
+.hero{position:relative}
+/* nothing may push the page wider than the screen (clip keeps the sticky nav working) */
+html,body{overflow-x:clip}
+/* feature cards may shrink to the screen width */
+.frow>*,.duo>*,.fcombo>*,.pane{min-width:0}
+@media (max-width:480px){
+  .wrap{padding:0 16px}
+  nav.top .wrap{gap:10px}
+  .brand{font-size:19px;gap:8px}
+  .brand .logo{width:34px;height:34px}
+  .navlinks{gap:10px}
+  .navlinks .btn{min-height:40px;padding:0 16px;font-size:15px}
+  .frow{padding:16px;border-radius:22px;gap:20px}
+  .pane{padding:12px}
+  .shop{height:540px}
+}
