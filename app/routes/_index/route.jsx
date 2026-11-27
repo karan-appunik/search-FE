@@ -96,10 +96,10 @@ function useLandingBehaviour() {
 
 // Runs before the page paints: inside the admin it hides the page
 // while going on to the dashboard; outside it picks the colour
-// theme (dark unless the visitor chose light before).
+// theme (light unless the visitor chose dark before).
 const BEFORE_PAINT = [
   "(function(){var s=window.location.search;if(!s)return;var e=true;try{e=window.top!==window.self;}catch(x){}if(e){document.documentElement.style.visibility='hidden';window.location.replace('/app'+s);}})();",
-  "(function(){var t='dark';try{var v=localStorage.getItem('askmerce-theme');if(v==='light'||v==='dark')t=v;}catch(e){}document.documentElement.setAttribute('data-theme',t);})();",
+  "(function(){var t='light';try{var v=localStorage.getItem('askmerce-theme');if(v==='light'||v==='dark')t=v;}catch(e){}document.documentElement.setAttribute('data-theme',t);})();",
 ].join("");
 
 export default function App() {

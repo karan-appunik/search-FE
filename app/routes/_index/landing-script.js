@@ -43,7 +43,7 @@ export function startLanding() {
     var heroData = [
       {q:"warm jacket for snowy hikes", why:"Matched warmth, outdoor use and weather", items:[["Insulated hiking anorak","$139","jacket","sky"],["Waterproof down jacket","$129","jacket","violet"],["Fleece-lined shell","$98","jacket","mint"]]},
       {q:"gift for dad who loves coffee", why:"Matched the person, the occasion and the interest", items:[["Pour-over coffee set","$42","cup","amber"],["Stoneware mug duo","$28","cup","coral"],["Gift card bundle","$50","gift","violet"]]},
-      {q:"sneekers", why:"Understood the typo: sneakers", items:[["Canvas low-top sneaker","$64","shoe","sky"],["Everyday running shoe","$89","shoe","mint"],["White leather trainer","$95","shoe","amber"]]}
+      {q:"couch for a small living room", why:"Matched couch → sofas, and a small space", items:[["Compact loveseat","$649","sofa","sky"],["2-seat linen sofa","$720","sofa","violet"],["Armless sofa","$560","sofa","mint"]]}
     ];
     var hq = document.getElementById("heroQ"), hr = document.getElementById("heroResults"), hw = document.getElementById("heroWhy");
     async function heroLoop(){
@@ -68,29 +68,30 @@ export function startLanding() {
     heroLoop();
 
     /* ---------- COMPARISON ---------- */
+    var QUESTIONS = ["What's best for cold weather?", "Gifts under $50", "What's new this week?"];
     var examples = [
-      { q:"sneekers",
-        normal:{empty:true, title:"No results for “sneekers”", sub:"Check the spelling or try another word."},
-        ai:{why:"Understood the typo → <b>sneakers</b>", items:[["Canvas low-top sneaker","$64","shoe","sky"],["Everyday running shoe","$89","shoe","mint"],["White leather trainer","$95","shoe","amber"]]},
-        bad:"0 results — the shopper leaves", good:"3 matches — added to cart" },
-      { q:"couch",
-        normal:{empty:true, title:"No results for “couch”", sub:"Your products are called “sofa”."},
+      { q:"couch", normal:{empty:true},
         ai:{why:"Same meaning → <b>sofas</b>", items:[["3-seat linen sofa","$899","sofa","violet"],["Compact loveseat","$649","sofa","sky"],["Corner sofa","$1,190","sofa","mint"]]},
-        bad:"0 results — even though you sell it", good:"3 matches — found what they meant" },
-      { q:"warm jacket for winter hikes",
-        normal:{wrong:[["Light denim jacket","$59","jacket"],["Summer windbreaker","$45","jacket"]]},
+        bad:"0 results — even though you sell sofas" },
+      { q:"warm jacket for winter hikes", normal:{wrong:[["Light denim jacket","$59","jacket"],["Summer windbreaker","$45","jacket"]]},
         ai:{why:"Matched <b>warm</b> + <b>outdoor</b> + <b>winter</b>", items:[["Insulated hiking anorak","$139","jacket","sky"],["Waterproof down jacket","$129","jacket","violet"],["Fleece-lined shell","$98","jacket","mint"]]},
-        bad:"Wrong products — only the word “jacket” matched", good:"3 matches — right for the weather" },
-      { q:"gift for dad under $50",
-        normal:{empty:true, title:"No results for “gift for dad under $50”", sub:"Try fewer words."},
+        bad:"Wrong products — only “jacket” matched" },
+      { q:"gift for dad under $50", normal:{empty:true},
         ai:{why:"Matched <b>gift</b> + <b>for dad</b> + <b>under $50</b>", items:[["Pour-over coffee set","$42","cup","amber"],["Stoneware mug duo","$28","cup","coral"],["Leather wallet gift box","$45","gift","violet"]]},
-        bad:"0 results — budgets aren't understood", good:"3 gifts, all under $50" }
+        bad:"0 results — budgets aren't understood" },
+      { q:"What's best for cold weather?", question:0, normal:{empty:true},
+        ai:{why:"Your search question → <b>warm picks</b>", items:[["Insulated hiking anorak","$139","jacket","sky"],["Waterproof down jacket","$129","jacket","violet"],["Fleece-lined shell","$98","jacket","mint"]]},
+        bad:"Had to type it all — and got 0 results" }
     ];
     var pN = document.getElementById("pN"), pA = document.getElementById("pA");
     var oN = document.getElementById("oN"), oA = document.getElementById("oA");
     var hand = document.getElementById("hand");
     var chips = document.querySelectorAll(".chip");
     var shopper = document.getElementById("shopper"), avUse = document.getElementById("avUse"), shopLine = document.getElementById("shopLine");
+    var run = 0;
+    var ARROW = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+
+    function el(p,s){ return p.querySelector(s); }
     function setFace(face, text){
       avUse.setAttribute("href", "#i-" + face);
       shopLine.textContent = text;
@@ -98,72 +99,102 @@ export function startLanding() {
       if(face === "happy"){ void shopper.offsetWidth; shopper.classList.add("joy"); }
     }
     function faceIcon(face){ return '<svg width="24" height="24" aria-hidden="true"><use href="#i-'+face+'"/></svg>'; }
-    var run = 0;
-
-    function el(p,s){ return p.querySelector(s); }
-    function moveHand(target, phone){
-      var pr = phone.getBoundingClientRect(), tr = target.getBoundingClientRect();
+    function moveHand(target){
+      var pr = pA.getBoundingClientRect(), tr = target.getBoundingClientRect();
       hand.style.opacity = 1;
-      hand.style.transform = "translate("+(tr.left - pr.left + tr.width*0.55)+"px,"+(tr.top - pr.top + tr.height*0.35)+"px)";
+      hand.style.transform = "translate("+(tr.left - pr.left + tr.width*0.5)+"px,"+(tr.top - pr.top + tr.height*0.35)+"px)";
     }
+    function tapFx(p){ var t = el(p,".tap"); t.classList.remove("go"); void t.offsetWidth; t.classList.add("go"); }
+    function showQuestions(show){
+      el(pA,".qs").innerHTML = show ? '<p class="ps-h">Popular questions</p><div class="qchips2">' + QUESTIONS.map(function(q,i){ return '<span data-q="'+i+'">'+q+'</span>'; }).join("") + '</div>' : "";
+    }
+    function productsHtml(items, wrong){
+      return '<p class="ps-h">Products</p>' + items.map(function(it){
+        return '<div class="ps-item'+(wrong?' wrong':'')+'">'+thumb(it[2], wrong ? "grey" : it[3])+'<span class="pinfo"><b>'+it[0]+'</b><span>'+it[1]+'</span>'+(wrong?'<em class="miss">Not what they meant</em>':'')+'</span></div>';
+      }).join("");
+    }
+    function footHtml(q){ return '<div class="ps-foot"><span>Search for “'+q+'”</span>'+ARROW+'</div>'; }
+    function revealItems(p){ p.querySelectorAll(".ps-item").forEach(function(c,i){ setTimeout(function(){ c.classList.add("show"); }, 60+i*140); }); }
+    function renderAI(ex){
+      el(pA,".results").innerHTML = '<div class="status"><svg class="spark" style="color:var(--lime-deep)"><use href="#i-spark"/></svg><span>'+ex.ai.why+'</span></div>' + productsHtml(ex.ai.items) + footHtml(ex.q);
+      revealItems(pA);
+    }
+    function renderNormal(ex){
+      var rn = el(pN,".results");
+      if(ex.normal.empty){
+        rn.innerHTML = '<p class="ps-empty">No results found for “'+ex.q+'”. Check the spelling or use a different word or phrase.</p>' + footHtml(ex.q);
+      } else {
+        rn.innerHTML = productsHtml(ex.normal.wrong, true) + footHtml(ex.q);
+        revealItems(pN);
+      }
+    }
+    function skeleton(p){ el(p,".results").innerHTML = '<div class="skel"></div><div class="skel"></div>'; }
 
     async function play(idx){
       if(!alive) return;
       var id = ++run, ex = examples[idx];
       chips.forEach(function(c){ c.setAttribute("aria-pressed", String(+c.dataset.i === idx)); });
-      [pN,pA].forEach(function(p){ el(p,".q").textContent=""; el(p,".results").innerHTML=""; el(p,".sfield").classList.remove("active"); });
+      [pN,pA].forEach(function(p){ el(p,".q").textContent=""; el(p,".results").innerHTML=""; el(p,".sinput").classList.remove("active"); el(p,".cbadge").classList.remove("on"); });
+      showQuestions(false);
       oN.classList.remove("show"); oA.classList.remove("show");
-      hand.style.opacity = 0; hand.style.transform = "translate(260px,420px)";
+      hand.style.opacity = 0; hand.style.transform = "translate(240px,520px)";
       setFace("think", "Looking for something on their phone…");
       await wait(500); if(id!==run) return;
 
-      // shopper taps the search field
-      moveHand(el(pA,".sfield"), pA);
+      // shopper opens search in both stores
+      moveHand(el(pA,".sinput"));
       await wait(950); if(id!==run) return;
-      [pN,pA].forEach(function(p){ var t=el(p,".tap"); t.classList.remove("go"); void t.offsetWidth; t.classList.add("go"); el(p,".sfield").classList.add("active"); });
+      tapFx(pN); tapFx(pA);
+      el(pN,".sinput").classList.add("active"); el(pA,".sinput").classList.add("active");
       hand.style.opacity = 0;
+      showQuestions(true); // only the Askmerce store shows its search questions
+      await wait(1000); if(id!==run) return;
 
-      // types the same words into both stores
-      setFace("think", "Typing: “" + ex.q + "”");
-      for(var k=1;k<=ex.q.length;k++){
-        if(id!==run) return;
-        el(pN,".q").textContent = el(pA,".q").textContent = ex.q.slice(0,k);
-        await wait(70 + Math.random()*70);
-      }
-      await wait(300); if(id!==run) return;
-      [pN,pA].forEach(function(p){ el(p,".results").innerHTML='<div class="skel"></div><div class="skel"></div>'; });
-      await wait(700); if(id!==run) return;
-
-      // normal search
-      var rn = el(pN,".results");
-      if(ex.normal.empty){
-        rn.innerHTML = '<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8.5 9.5l5 5M13.5 9.5l-5 5"/></svg><b>'+ex.normal.title+'</b><span>'+ex.normal.sub+'</span></div>';
-        setTimeout(function(){ var e=rn.querySelector(".empty"); if(e) e.classList.add("show"); }, 30);
+      if(ex.question != null){
+        // Askmerce: one tap on a question
+        setFace("think", "Sees a question that fits…");
+        var chip = el(pA,'.qchips2 span[data-q="'+ex.question+'"]');
+        moveHand(chip);
+        await wait(950); if(id!==run) return;
+        chip.classList.add("hit"); hand.style.opacity = 0;
+        await wait(300); if(id!==run) return;
+        el(pA,".q").textContent = ex.q;
+        showQuestions(false);
+        skeleton(pA);
+        await wait(500); if(id!==run) return;
+        renderAI(ex);
+        // normal store: no questions, so the shopper types it all
+        setFace("think", "Normal store: has to type it all…");
+        for(var t=1;t<=ex.q.length;t++){ if(id!==run) return; el(pN,".q").textContent = ex.q.slice(0,t); await wait(60+Math.random()*60); }
+        skeleton(pN);
+        await wait(600); if(id!==run) return;
+        renderNormal(ex);
       } else {
-        rn.innerHTML = '<div class="status">2 results for “'+ex.q+'”</div>' + ex.normal.wrong.map(function(it){
-          return '<div class="rcard wrong">'+thumb(it[2],"grey")+'<div class="meta"><b>'+it[0]+'</b><span>'+it[1]+'</span><br><span class="miss">Not what they meant</span></div></div>';
-        }).join("");
-        rn.querySelectorAll(".rcard").forEach(function(c,i){ setTimeout(function(){ c.classList.add("show"); }, 60+i*140); });
+        setFace("think", "Typing: “" + ex.q + "”");
+        showQuestions(false);
+        for(var k=1;k<=ex.q.length;k++){
+          if(id!==run) return;
+          el(pN,".q").textContent = el(pA,".q").textContent = ex.q.slice(0,k);
+          await wait(70 + Math.random()*70);
+        }
+        await wait(300); if(id!==run) return;
+        skeleton(pN); skeleton(pA);
+        await wait(700); if(id!==run) return;
+        renderNormal(ex);
+        renderAI(ex);
       }
-
-      // Askmerce
-      var ra = el(pA,".results");
-      ra.innerHTML = '<div class="status"><svg class="spark" style="color:var(--lime-deep)"><use href="#i-spark"/></svg><span>'+ex.ai.why+'</span></div>' + ex.ai.items.map(function(it){
-        return '<div class="rcard">'+thumb(it[2],it[3])+'<div class="meta"><b>'+it[0]+'</b><span>'+it[1]+'</span></div><span class="add">Add</span></div>';
-      }).join("");
-      var cards = ra.querySelectorAll(".rcard");
-      for(var c=0;c<cards.length;c++){ cards[c].classList.add("show"); await wait(160); }
-      if(id!==run) return;
+      await wait(500); if(id!==run) return;
       oN.innerHTML = faceIcon("sad") + ex.bad; oN.classList.add("show");
 
-      // shopper taps "Add" on the first match
+      // shopper picks the first Askmerce result -> cart
       await wait(500); if(id!==run) return;
-      var add = cards[0].querySelector(".add");
-      moveHand(add, pA);
+      var first = el(pA,".ps-item");
+      moveHand(first);
       await wait(950); if(id!==run) return;
-      add.classList.add("done"); add.textContent = "Added";
+      first.classList.add("picked");
+      el(pA,".cbadge").classList.add("on");
       hand.style.opacity = 0;
-      oA.innerHTML = faceIcon("happy") + ex.good; oA.classList.add("show");
+      oA.innerHTML = faceIcon("happy") + "Found it — added to cart"; oA.classList.add("show");
       setFace("happy", "Found it with Askmerce — and added it to the cart!");
 
       await wait(3200); if(id!==run) return;
@@ -175,7 +206,6 @@ export function startLanding() {
     var ioCompare = new IntersectionObserver(function(es){
       if(es[0].isIntersecting && !started){ started = true; play(0); }
     },{threshold:.3}).observe(document.getElementById("compare"));
-
 
     /* ---------- WALKTHROUGH PLAYER ---------- */
     var scenes = document.querySelectorAll(".scene"), chaps = document.querySelectorAll(".chap");
